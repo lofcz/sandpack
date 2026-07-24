@@ -1,4 +1,4 @@
-import type { TestError } from "@codesandbox/sandpack-client";
+import type { TestError } from "@lofcz/sandpack-client";
 import React from "react";
 
 import { useClassNames } from "../../utils/classNames";

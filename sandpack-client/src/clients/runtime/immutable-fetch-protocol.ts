@@ -16,13 +16,14 @@
  */
 
 /**
- * URL prefixes whose responses never change for a given URL (the URL encodes
- * the exact content version). Only these may be fetched on the iframe's
- * behalf, and they are safe to cache forever.
+ * Built-in URL prefixes whose responses never change for a given URL (the URL
+ * encodes the exact content version). Only these (plus any prefixes passed via
+ * {@link handleImmutableFetch}'s `extraPrefixes`) may be fetched on the
+ * iframe's behalf, and they are safe to cache forever.
  */
 const IMMUTABLE_URL_ALLOWLIST = [
-  // Module CDN, exact-versioned package bundles. (NOT /dep_tree/, which
-  // resolves semver ranges and changes as new versions publish.)
+  // Legacy public staging CDN (fallback when bundler couldn't derive a host).
+  // Prefer passing the Priprava `/sandpack-cdn/package/` prefix via ClientOptions.
   "https://sandpack-cdn-staging.blazingly.io/package/",
   // unpkg files, requested by the bundler at registry-resolved exact versions.
   "https://unpkg.com/",
@@ -107,10 +108,15 @@ const matchesIntegrity = async (
 export async function handleImmutableFetch(
   url: unknown,
   integrity?: unknown,
+  extraPrefixes?: string[],
 ): Promise<ImmutableFetchResult> {
+  const allowlist =
+    extraPrefixes && extraPrefixes.length > 0
+      ? IMMUTABLE_URL_ALLOWLIST.concat(extraPrefixes)
+      : IMMUTABLE_URL_ALLOWLIST;
   if (
     typeof url !== "string" ||
-    !IMMUTABLE_URL_ALLOWLIST.some((prefix) => url.startsWith(prefix))
+    !allowlist.some((prefix) => url.startsWith(prefix))
   ) {
     throw new Error(`URL not allowed for immutable fetch: ${String(url)}`);
   }

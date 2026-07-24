@@ -36,7 +36,7 @@
     },
     "build:client": {
       "name": "Build: client",
-      "command": "yarn workspace @codesandbox/sandpack-client build",
+      "command": "yarn workspace @lofcz/sandpack-client build",
       "restartOn": {
         "branch": true,
         "resume": false

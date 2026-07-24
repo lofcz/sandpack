@@ -1,4 +1,4 @@
-import { SandpackFS } from "@codesandbox/sandpack-client";
+import { SandpackFS } from "@lofcz/sandpack-client";
 
 import type { FilesState } from "./useFiles";
 

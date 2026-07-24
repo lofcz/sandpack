@@ -1,4 +1,4 @@
-import type { FileMetaMap } from "@codesandbox/sandpack-client";
+import type { FileMetaMap } from "@lofcz/sandpack-client";
 
 import { fromPropsToModules } from "./utils";
 

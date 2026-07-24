@@ -34,6 +34,13 @@ export interface ClientOptions {
    */
   babelWorkerURL?: string;
   /**
+   * Extra URL prefixes allowed for the parent-side immutable-fetch proxy
+   * (exact-versioned module CDN `/package/` responses). Appended to the
+   * built-in allowlist — use this for a self-hosted sandpack-cdn, e.g.
+   * `https://<priprava-host>/sandpack-cdn/package/`.
+   */
+  immutableUrlPrefixes?: string[];
+  /**
    * Level of logging to do in the bundler
    */
   logLevel?: SandpackLogLevel;

@@ -1,4 +1,4 @@
-import type { FileMetaMap } from "@codesandbox/sandpack-client";
+import type { FileMetaMap } from "@lofcz/sandpack-client";
 
 /**
  * Build the `{directories, modules}` split used by the file explorer. Takes

@@ -1,11 +1,12 @@
 {
-  "name": "@codesandbox/sandpack-client",
-  "version": "2.19.8",
-  "description": "",
+  "name": "@lofcz/sandpack-client",
+  "version": "2.19.9",
+  "description": "Fork of @codesandbox/sandpack-client with ZenFS / immutable-fetch patches for sciobot",
   "keywords": [],
   "repository": {
     "type": "git",
-    "url": "https://github.com/codesandbox/sandpack"
+    "url": "git+https://github.com/lofcz/sandpack.git",
+    "directory": "sandpack-client"
   },
   "license": "Apache-2.0",
   "author": "CodeSandbox",
@@ -54,11 +55,12 @@
   },
   "files": [
     "dist",
-    "esm",
-    "sandpack",
     "package.json",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@codesandbox/nodebox": "0.1.8",
     "@zenfs/core": "~2.3.11",

@@ -16,7 +16,7 @@ module.exports = {
     // Resolve the workspace package to source so Jest can transform the
     // ESM-only `@zenfs/core` dependency via babel-jest instead of hitting
     // the CJS dist build.
-    "^@codesandbox/sandpack-client$":
+    "^@lofcz/sandpack-client$":
       "<rootDir>/../sandpack-client/src/index.ts",
   },
   globals: {

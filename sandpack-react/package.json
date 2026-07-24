@@ -5,7 +5,8 @@
   "keywords": [],
   "repository": {
     "type": "git",
-    "url": "https://github.com/codesandbox/sandpack"
+    "url": "git+https://github.com/lofcz/sandpack.git",
+    "directory": "sandpack-react"
   },
   "license": "Apache-2.0",
   "author": "CodeSandbox",
@@ -58,7 +59,7 @@
     "@codemirror/language": "^6.10.6",
     "@codemirror/state": "^6.5.0",
     "@codemirror/view": "^6.35.3",
-    "@codesandbox/sandpack-client": "^2.19.8",
+    "@lofcz/sandpack-client": "^2.19.9",
     "@lezer/highlight": "^1.2.1",
     "@zenfs/core": "~2.3.11",
     "@react-hook/intersection-observer": "^3.1.2",

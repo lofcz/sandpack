@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { SandpackFS } from "@codesandbox/sandpack-client";
+import { SandpackFS } from "@lofcz/sandpack-client";
 import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { VANILLA_TEMPLATE } from "../../templates";

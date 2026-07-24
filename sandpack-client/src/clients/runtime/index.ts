@@ -143,7 +143,13 @@ export class SandpackRuntime extends SandpackClient {
               }
               // params[1] is an optional `sha384-…` integrity the caller pins
               // for this URL (SDK files); the cache verifies against it.
-              return handleImmutableFetch(data.params[0], data.params[1]);
+              // Extra prefixes (e.g. Priprava `/sandpack-cdn/package/`) come
+              // from ClientOptions.immutableUrlPrefixes.
+              return handleImmutableFetch(
+                data.params[0],
+                data.params[1],
+                this.options.immutableUrlPrefixes,
+              );
             },
             this.iframeProtocol,
           );

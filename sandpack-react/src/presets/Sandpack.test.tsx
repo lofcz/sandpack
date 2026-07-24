@@ -3,7 +3,7 @@
  */
 
 /* eslint-disable @typescript-eslint/no-var-requires */
-import type { SandpackFS } from "@codesandbox/sandpack-client";
+import type { SandpackFS } from "@lofcz/sandpack-client";
 import React from "react";
 import { renderToString } from "react-dom/server";
 

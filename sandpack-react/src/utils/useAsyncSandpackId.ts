@@ -1,4 +1,4 @@
-import type { SandpackFS } from "@codesandbox/sandpack-client";
+import type { SandpackFS } from "@lofcz/sandpack-client";
 import { useId as useReactId } from "react";
 
 import { generateRandomId } from "./stringUtils";

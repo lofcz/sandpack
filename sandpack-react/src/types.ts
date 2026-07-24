@@ -15,7 +15,7 @@ import type {
   FsSnapshot,
   UnsubscribeFunction,
   SandpackLogLevel,
-} from "@codesandbox/sandpack-client";
+} from "@lofcz/sandpack-client";
 import type React from "react";
 
 import type { ClientPropsOverride } from "./contexts/utils/useClient";

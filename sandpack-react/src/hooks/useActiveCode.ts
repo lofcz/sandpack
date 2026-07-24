@@ -5,7 +5,7 @@ import { useSandpack } from "./useSandpack";
 /**
  * Returns the current contents of the active file together with helpers to
  * edit it. Content is fetched asynchronously from the backing
- * {@link import("@codesandbox/sandpack-client").SandpackFS} so
+ * {@link import("@lofcz/sandpack-client").SandpackFS} so
  * `code` is `undefined` until the first read resolves (reflected via
  * `isLoading`).
  *

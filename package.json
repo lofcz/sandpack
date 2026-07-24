@@ -20,21 +20,21 @@
     "clean": "rm -rf sandpack*/dist/*",
     "test": "turbo run test --filter=\"@codesandbox/**\"",
     "build": "turbo run build --filter=\"@codesandbox/**\"",
-    "build:client": "turbo run build --filter=\"@codesandbox/sandpack-client\"",
+    "build:client": "turbo run build --filter=\"@lofcz/sandpack-client\"",
     "build:react": "turbo run build --filter=\"@codesandbox/sandpack-react\"",
-    "typecheck": "turbo run typecheck --filter=\"@codesandbox/**\"",
-    "lint": "turbo run lint --filter=\"@codesandbox/**\"",
-    "format": "turbo run format --filter=\"@codesandbox/**\"",
-    "format:check": "turbo run format:check --filter=\"@codesandbox/**\"",
+    "typecheck": "turbo run typecheck --filter=\"@codesandbox/**\" --filter=\"@lofcz/sandpack-client\"",
+    "lint": "turbo run lint --filter=\"@codesandbox/**\" --filter=\"@lofcz/sandpack-client\"",
+    "format": "turbo run format --filter=\"@codesandbox/**\" --filter=\"@lofcz/sandpack-client\"",
+    "format:check": "turbo run format:check --filter=\"@codesandbox/**\" --filter=\"@lofcz/sandpack-client\"",
     "-----": "-----",
     "dev:docs": "yarn workspace sandpack-docs dev",
-    "dev:react": "turbo run dev --filter=@codesandbox/sandpack-react --filter=@codesandbox/sandpack-client",
+    "dev:react": "turbo run dev --filter=@codesandbox/sandpack-react --filter=@lofcz/sandpack-client",
     "dev:landing": "yarn workspace sandpack-landing dev -p 3001",
     "dev:theme": "yarn workspace sandpack-theme dev -p 3002"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/codesandbox/sandpack"
+    "url": "https://github.com/lofcz/sandpack"
   },
   "author": "CodeSandbox",
   "license": "Apache-2.0",

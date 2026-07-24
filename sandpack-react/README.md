@@ -49,7 +49,7 @@ for you, but a few things changed that you should know about:
 You can also pass a pre-built `SandpackFS` to `SandpackProvider`:
 
 ```tsx
-import { SandpackFS } from "@codesandbox/sandpack-client";
+import { SandpackFS } from "@lofcz/sandpack-client";
 
 const fs = await SandpackFS.fromFiles({
   "/index.js": { code: "console.log('hi')" },

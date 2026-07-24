@@ -3,7 +3,7 @@
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
-import type { SandpackFS } from "@codesandbox/sandpack-client";
+import type { SandpackFS } from "@lofcz/sandpack-client";
 import React from "react";
 
 import { SandpackProvider } from "../../contexts/sandpackContext";
