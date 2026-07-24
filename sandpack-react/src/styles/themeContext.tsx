@@ -5,8 +5,9 @@ import { defaultLight } from "../themes";
 import type { SandpackTheme, SandpackThemeProp } from "../types";
 import { useClassNames } from "../utils/classNames";
 
-import { standardizeTheme, themeVars, vars } from ".";
 import { wrapperClassName } from "./themeContext.css";
+
+import { standardizeTheme, themeVars, vars } from ".";
 
 const SandpackThemeContext = React.createContext<{
   theme: SandpackTheme;

@@ -3,15 +3,15 @@ import * as React from "react";
 import { useClassNames } from "../../utils/classNames";
 
 import {
-  failTextClassName,
-  passTextClassName,
-  skipTextClassName,
-} from "./style";
-import {
   containerClassName,
   gapBottomClassName,
   labelClassName,
 } from "./Summary.css";
+import {
+  failTextClassName,
+  passTextClassName,
+  skipTextClassName,
+} from "./style";
 
 export interface TestResults {
   pass: number;

@@ -1,0 +1,44 @@
+name: Publish to npm (OIDC)
+
+# Publish the three forked packages to npm under @lofcz via trusted publishing (OIDC).
+# Each package is skipped if its current version is already published.
+#
+# Prerequisite: configure an npm trusted publisher for EACH of
+# @lofcz/sandpack-client, @lofcz/sandpack-react, @lofcz/sandpack-themes
+# pointing at this repo + this workflow filename, before the first publish.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - run: npm install -g npm@latest
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - name: Publish each package (skip if already published)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          NODE_AUTH_TOKEN: ""
+          NPM_CONFIG_PROVENANCE: true
+        run: |
+          for pkg in sandpack-client sandpack-react sandpack-themes; do
+            name=$(node -p "require('./$pkg/package.json').name")
+            ver=$(node -p "require('./$pkg/package.json').version")
+            if npm view "$name@$ver" version >/dev/null 2>&1; then
+              echo "::notice::$name@$ver already published — skipping."
+            else
+              (cd "$pkg" && npm publish --provenance --access public)
+            fi
+          done

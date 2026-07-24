@@ -431,15 +431,18 @@ export const CodeMirror = React.forwardRef<CodeMirrorRef, CodeMirrorProps>(
 
       try {
         view.dispatch({
-          changes: { from: start, to: endOld, insert: code.slice(start, endNew) },
+          changes: {
+            from: start,
+            to: endOld,
+            insert: code.slice(start, endNew),
+          },
           annotations: externalSync.of(true),
         });
       } catch (err) {
         // A failed sync must never take down the host app.
-        // eslint-disable-next-line no-console
+
         console.error("[sandpack] code-prop sync failed", { err: String(err) });
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [code]);
 
     React.useEffect(

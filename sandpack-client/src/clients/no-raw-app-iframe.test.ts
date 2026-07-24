@@ -2,7 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * The greppable half of the G1/T1 invariant (UI_AS_APPS_SPEC §6.2): every app
+ * The greppable half of the G1/T1 invariant (UI_AS_APPS_SPEC §2 — "The layering
+ * model & the hard boundary"; §6.2 in the pre-2026-06 numbering): every app
  * iframe must be born in `iframe-factory.ts` so it is guaranteed opaque-origin.
  * `assertOpaqueOrigin` enforces this at runtime; this test enforces it
  * statically, so a new client that hand-rolls `document.createElement("iframe")`

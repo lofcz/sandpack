@@ -1,3 +1,5 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream — not used by immediately.run (see
+// DEPRECATION_CANDIDATES.md, sandpack-react components); flag-only, do not remove.
 import * as React from "react";
 
 import { useSandpackTheme, useSandpack } from "../../hooks";

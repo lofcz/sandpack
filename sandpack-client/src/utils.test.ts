@@ -1,6 +1,10 @@
-import { bindContext, InMemory, mount, resolveMountConfig } from "@zenfs/core";
-import { addPackageJSONIfNeeded, normalizePath } from "./utils";
+import { addPackageJSONIfNeededToMap, normalizePath } from "./utils";
 
+// The filesystem-mutating `addPackageJSONIfNeeded(fs, …)` variant was removed
+// (BOOT_SCAFFOLDING_SPEC §3 — the resolved package.json is delivered to the
+// bundler out-of-band, not written into the CoW). The pure map variant
+// `addPackageJSONIfNeededToMap` is the one still in use (createSandpackFS), so
+// coverage moves here — and it needs no zenfs harness.
 const baseFiles = {
   "/package.json": {
     code: `{
@@ -12,76 +16,52 @@ const baseFiles = {
   },
 };
 
-async function mkFs(files?: Record<string, { code: string }>) {
-  const dir = `/${(Math.random() * 100000).toString(16)}`;
-  const fs = await resolveMountConfig({ backend: InMemory, label: dir });
-  mount(dir, fs);
-  const context = bindContext({ root: dir }).fs;
-  if (files) {
-    for (const [path, { code }] of Object.entries(files)) {
-      await context.promises.writeFile(path, code);
-    }
-  }
-  return context;
-}
+const parsePkg = (files: Record<string, { code: string }>) =>
+  JSON.parse(files["/package.json"].code);
 
-describe(addPackageJSONIfNeeded, () => {
-  afterEach(() => {
-    // SandpackFS instances allocate unique mount points, so there's nothing
-    // shared between tests to clean up aside from their own disposal (handled
-    // implicitly once they go out of scope).
+describe(addPackageJSONIfNeededToMap, () => {
+  test("merges dependencies into an existing package.json", () => {
+    const out = addPackageJSONIfNeededToMap(baseFiles, { foo: "*" });
+    expect(parsePkg(out).dependencies).toEqual({ baz: "*", foo: "*" });
   });
 
-  test("it merges the package.json - dependencies", async () => {
-    const fs = await mkFs();
-    await addPackageJSONIfNeeded(fs, { foo: "*" });
-    const pkg = JSON.parse(
-      await fs.promises.readFile("/package.json", "utf-8"),
-    );
-    expect(pkg.dependencies).toEqual({ baz: "*", foo: "*" });
+  test("merges dev-dependencies into an existing package.json", () => {
+    const out = addPackageJSONIfNeededToMap(baseFiles, undefined, { foo: "*" });
+    expect(parsePkg(out).devDependencies).toEqual({ baz: "*", foo: "*" });
   });
 
-  test("it merges the package.json - dev-dependencies", async () => {
-    const fs = await mkFs();
-    await addPackageJSONIfNeeded(fs, undefined, { foo: "*" });
-    const pkg = JSON.parse(
-      await fs.promises.readFile("/package.json", "utf-8"),
+  test("sets the entry (main) on an existing package.json", () => {
+    const out = addPackageJSONIfNeededToMap(
+      baseFiles,
+      undefined,
+      undefined,
+      "new-entry.js",
     );
-    expect(pkg.devDependencies).toEqual({ baz: "*", foo: "*" });
+    expect(parsePkg(out).main).toEqual("new-entry.js");
   });
 
-  test("it merges the package.json - entry", async () => {
-    const fs = await mkFs();
-    await addPackageJSONIfNeeded(fs, undefined, undefined, "new-entry.js");
-    const pkg = JSON.parse(
-      await fs.promises.readFile("/package.json", "utf-8"),
+  test("creates a package.json when absent, given deps + entry", () => {
+    const out = addPackageJSONIfNeededToMap(
+      {},
+      { react: "*" },
+      undefined,
+      "/index.js",
     );
-    expect(pkg.main).toEqual("new-entry.js");
+    const pkg = parsePkg(out);
+    expect(pkg.dependencies).toEqual({ react: "*" });
+    expect(pkg.main).toEqual("/index.js");
   });
 
-  test("it set the entry file into package.json", async () => {
-    const fs = await mkFs({
-      "/package.json": {
-        code: `{
-      "name": "custom-package",
-      "dependencies": { "baz": "*" },
-      "devDependencies": { "baz": "*" }
-    }`,
-      },
-    });
-    await addPackageJSONIfNeeded(fs, undefined, undefined, "new-entry.js");
-    const pkg = JSON.parse(
-      await fs.promises.readFile("/package.json", "utf-8"),
-    );
-    expect(pkg.main).toEqual("new-entry.js");
+  test("does not mutate the input map", () => {
+    const input = { ...baseFiles };
+    addPackageJSONIfNeededToMap(input, { foo: "*" });
+    expect(parsePkg(input).dependencies).toEqual({ baz: "*" });
   });
 
-  test("it returns an error when there is not dependencies at all", async () => {
-    const fs = await mkFs({ "/package.json": { code: `{}` } });
-
-    await expect(addPackageJSONIfNeeded(fs)).rejects.toThrow(
-      '[sandpack-client]: "entry" was not specified',
-    );
+  test("throws when there are no dependencies at all", () => {
+    expect(() =>
+      addPackageJSONIfNeededToMap({ "/package.json": { code: `{}` } }),
+    ).toThrow('[sandpack-client]: "entry" was not specified');
   });
 });
 

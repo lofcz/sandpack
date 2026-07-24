@@ -1,6 +1,6 @@
 import type { FileMetaMap, SandpackFS } from "@lofcz/sandpack-client";
 import { normalizePath } from "@lofcz/sandpack-client/utils";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { SandboxEnvironment, SandpackProviderProps } from "../..";
 
@@ -18,8 +18,6 @@ export interface FilesState {
 
 interface FilesOperations {
   openFile: (path: string) => void;
-  resetFile: (path: string) => Promise<void>;
-  resetAllFiles: () => Promise<void>;
   setActiveFile: (path: string) => void;
   updateCurrentFile: (
     code: string,
@@ -88,12 +86,6 @@ export const useFiles: UseFiles = (props) => {
     isLoading: true,
   });
 
-  /**
-   * Snapshot of the original file contents at mount so we can implement
-   * `resetFile` / `resetAllFiles`.
-   */
-  const originalSnapshotRef = useRef<Record<string, string>>({});
-
   useEffect(() => {
     let cancelled = false;
 
@@ -104,15 +96,7 @@ export const useFiles: UseFiles = (props) => {
         // readdir, which would surface relative paths and the metadata
         // directory — and pick `/.sandpack` as the active file.
         const paths = await fs.list();
-        const snap: Record<string, string> = {};
-        await Promise.all(
-          paths.map(async (p) => {
-            snap[p] = await fs.readFile(p);
-          }),
-        );
         if (cancelled) return;
-
-        originalSnapshotRef.current = snap;
 
         const meta = fs.getAllMetadata();
         const visible: string[] = [];
@@ -228,19 +212,6 @@ export const useFiles: UseFiles = (props) => {
             : [...prev.visibleFiles, path];
           return { ...prev, activeFile: path, visibleFiles: newPaths };
         });
-      },
-      resetFile: async (path: string) => {
-        const original = originalSnapshotRef.current[path];
-        if (original !== undefined) {
-          await fs.writeFile(path, original);
-        }
-      },
-      resetAllFiles: async () => {
-        await Promise.all(
-          Object.entries(originalSnapshotRef.current).map(([path, body]) =>
-            fs.writeFile(path, body),
-          ),
-        );
       },
       setActiveFile: (activeFile: string) => {
         setUiState((prev) => ({ ...prev, activeFile }));

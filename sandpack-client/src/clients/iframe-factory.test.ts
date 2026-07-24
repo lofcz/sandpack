@@ -52,3 +52,70 @@ describe("iframe factory — the opaque-origin invariant (G1/T1)", () => {
     ).toThrow(/allow-same-origin/);
   });
 });
+
+// R3-195 — the §G1a stance tightening. M3 (a stranger's app) emits a hardened
+// sandbox + delegated-features set that is a STRICT SUBSET of the baseline; M0–M2
+// (and an absent stance) emit the EXACT baseline.
+describe("iframe factory — M3 stance containment (§G1a / R3-195)", () => {
+  const tokens = (s: string) => new Set(s.split(/\s+/).filter(Boolean));
+  const sandboxFor = (stance?: "M0" | "M1" | "M2" | "M3") =>
+    attrsOf(createSandboxedIframe(fakeDoc, stance)).sandbox;
+  const allowFor = (stance?: "M0" | "M1" | "M2" | "M3") =>
+    attrsOf(createSandboxedIframe(fakeDoc, stance)).allow;
+
+  it("M0/M1/M2/absent emit the EXACT baseline sandbox (never tightened)", () => {
+    const baseline = sandboxFor(undefined);
+    for (const s of ["M0", "M1", "M2"] as const) {
+      expect(sandboxFor(s)).toBe(baseline);
+      expect(allowFor(s)).toBe(allowFor(undefined));
+    }
+    // The baseline is the trusted-author set (value 3).
+    expect(tokens(baseline)).toEqual(
+      tokens(
+        "allow-forms allow-modals allow-popups allow-presentation allow-scripts allow-downloads allow-pointer-lock",
+      ),
+    );
+  });
+
+  it("M3 sandbox is a STRICT SUBSET of baseline — removes forms/popups/modals/presentation, keeps scripts", () => {
+    const baseline = tokens(sandboxFor(undefined));
+    const m3 = tokens(sandboxFor("M3"));
+    // subset: every M3 token is in the baseline, and it never adds a flag
+    for (const t of m3) expect(baseline.has(t)).toBe(true);
+    // strictly smaller (the four bulk-egress flags are gone)
+    expect(m3.size).toBeLessThan(baseline.size);
+    for (const gone of [
+      "allow-forms",
+      "allow-popups",
+      "allow-modals",
+      "allow-presentation",
+    ]) {
+      expect(m3.has(gone)).toBe(false);
+    }
+    // the app must still run + its harmless capabilities remain
+    for (const kept of [
+      "allow-scripts",
+      "allow-downloads",
+      "allow-pointer-lock",
+    ]) {
+      expect(m3.has(kept)).toBe(true);
+    }
+    // the load-bearing invariant is never regressed
+    expect(m3.has("allow-same-origin")).toBe(false);
+  });
+
+  it("M3 delegates NO features (empty allow) — a subset of baseline (camera/mic/geo/WebRTC withheld)", () => {
+    const baselineAllow = tokens(allowFor(undefined).replace(/;/g, " "));
+    const m3Allow = tokens(allowFor("M3").replace(/;/g, " "));
+    expect(m3Allow.size).toBe(0);
+    for (const t of m3Allow) expect(baselineAllow.has(t)).toBe(true); // vacuously subset
+    expect(baselineAllow.has("camera")).toBe(true); // baseline delegated it; M3 doesn't
+  });
+
+  it("ensureSandboxed applies the M3 flags when it is the one setting the attribute", () => {
+    const f = fakeIframe();
+    ensureSandboxed(f, "M3");
+    expect(tokens(attrsOf(f).sandbox).has("allow-popups")).toBe(false);
+    expect(tokens(attrsOf(f).sandbox).has("allow-scripts")).toBe(true);
+  });
+});

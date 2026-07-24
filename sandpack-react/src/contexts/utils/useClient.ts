@@ -17,8 +17,16 @@ import type {
   SandpackStatus,
 } from "../..";
 import { generateRandomId } from "../../utils/stringUtils";
-import { useAsyncSandpackId } from "../../utils/useAsyncSandpackId";
+import {
+  cheapSandpackId,
+  useAsyncSandpackId,
+} from "../../utils/useAsyncSandpackId";
 
+import {
+  createPreConnectDispatchQueue,
+  type PreConnectDispatchQueue,
+  type QueuedDispatch,
+} from "./preConnectDispatchQueue";
 import type { FilesState } from "./useFiles";
 
 type SandpackClientType = InstanceType<typeof SandpackClient>;
@@ -114,6 +122,18 @@ export const useClient: UseClient = (
   const debounceHook = useRef<number | undefined>(undefined);
   const prevEnvironment = useRef(filesState.environment);
 
+  // Pre-connect dispatch buffer (R3-109 / sandpack-seam-hardening Phase 2):
+  // `dispatch` calls made before the bundler client connects are held here in
+  // FIFO order and replayed exactly once on the first "connected"/"done", so the
+  // host can announce mount/fs state eagerly instead of re-announcing it after
+  // connect. `connectedRef` selects buffer (pre-connect) vs. direct (connected)
+  // delivery; both are reset on a full client teardown so nothing stale replays.
+  const preConnectQueue = useRef<PreConnectDispatchQueue | null>(null);
+  if (preConnectQueue.current === null) {
+    preConnectQueue.current = createPreConnectDispatchQueue();
+  }
+  const connectedRef = useRef(false);
+
   const asyncSandpackId = useAsyncSandpackId(
     filesState.fileList,
     filesState.fs,
@@ -134,7 +154,12 @@ export const useClient: UseClient = (
         clients.current[clientId].destroy();
       }
 
-      console.log("[Sandpack] Creating client", { iframe, clientId, clientPropsOverride });
+      // eslint-disable-next-line no-console -- dev client-creation trace
+      console.log("[Sandpack] Creating client", {
+        iframe,
+        clientId,
+        clientPropsOverride,
+      });
 
       options ??= {};
 
@@ -159,6 +184,14 @@ export const useClient: UseClient = (
       }
 
       const getStableServiceWorkerId = async () => {
+        // The bundler only consumes this id when the service worker is enabled.
+        // Deriving it hashes the WHOLE filesystem — it walks the maintained file
+        // list and reads every file. When the SW is off that work is pure waste
+        // (the id is ignored), so hand back a cheap throwaway id and skip the read.
+        if (!options?.experimental_enableServiceWorker) {
+          return cheapSandpackId();
+        }
+
         if (options?.experimental_enableStableServiceWorkerId) {
           const key = `SANDPACK_INTERNAL:URL-CONSISTENT-ID`;
           let fixedId = localStorage.getItem(key);
@@ -184,6 +217,10 @@ export const useClient: UseClient = (
           externalResources: options.externalResources,
           bundlerURL: options.bundlerURL,
           babelWorkerURL: options.babelWorkerURL,
+          // R3-195: forward the host-resolved trust stance so the client emits the
+          // M3-hardened iframe (sandbox flags + delegated features); absent/M0–M2
+          // keeps the exact baseline.
+          stance: options.stance,
           startRoute: clientPropsOverride?.startRoute ?? options.startRoute,
           skipEval: options.skipEval ?? false,
           logLevel: options.logLevel,
@@ -195,10 +232,18 @@ export const useClient: UseClient = (
           // register-frame and the bundler skips seeding edited-in-a-prior-session
           // paths. Absent ⇒ nothing dirty.
           dirtyPaths: options.dirtyPaths,
+          // The §5.7 per-commit distrust mark: forward so the runtime client delivers
+          // it on register-frame and the bundler ignores the zip's artifact section
+          // when a prior session caught a tampered artifact. Absent/false ⇒ trusted.
+          distrustArtifacts: options.distrustArtifacts,
           // R3-49b batch-hydration snapshot: forward so the runtime client delivers
           // it on register-frame and the bundler hydrates its read caches before the
           // first compile. Absent ⇒ reads cross the Port as before.
           fsSnapshot: options.fsSnapshot,
+          // The chrome region this frame occupies (R3-114): forward so the runtime
+          // client delivers it on register-frame and the bundler surfaces it on the
+          // runtime global for the SDK's getRegion(). Absent ⇒ the app reads no region.
+          region: options.region,
           showOpenInCodeSandbox: false,
           showErrorScreen: true,
           showLoadingScreen: false,
@@ -288,6 +333,12 @@ export const useClient: UseClient = (
       unsubscribe.current();
       unsubscribe.current = undefined;
     }
+
+    // Re-arm the pre-connect buffer (R3-109): the next runSandpack() begins a
+    // fresh connect cycle, so early dispatches must be buffered again and any
+    // stale buffered state must not replay into it.
+    connectedRef.current = false;
+    preConnectQueue.current?.reset();
   }, []);
 
   const runSandpack = useCallback(async (): Promise<void> => {
@@ -412,7 +463,33 @@ export const useClient: UseClient = (
     setState((prev) => ({ ...prev, status }));
   };
 
+  // Deliver a dispatch to the addressed client, or broadcast to all. A missing
+  // client is skipped rather than throwing — a client can unregister between a
+  // message being buffered and the flush.
+  const deliverDispatch = ({ message, clientId }: QueuedDispatch): void => {
+    if (clientId) {
+      clients.current[clientId]?.dispatch(message);
+    } else {
+      Object.values(clients.current).forEach((client) => {
+        client.dispatch(message);
+      });
+    }
+  };
+
   const handleMessage = (msg: SandpackMessage): void => {
+    // First connect: replay every dispatch buffered before the client could
+    // receive it, in FIFO order, exactly once. The queue empties on drain, so
+    // the repeated "done"s of later recompiles are no-ops, and from here on
+    // `dispatchMessage` delivers directly.
+    if (
+      !connectedRef.current &&
+      (msg.type === "connected" ||
+        (msg.type === "done" && !msg.compilatonError))
+    ) {
+      connectedRef.current = true;
+      preConnectQueue.current!.flush(deliverDispatch);
+    }
+
     if (msg.type === "start") {
       setState((prev) => ({ ...prev, error: null }));
     } else if (msg.type === "state") {
@@ -455,20 +532,16 @@ export const useClient: UseClient = (
     message: SandpackMessage,
     clientId?: string,
   ): void => {
-    if (state.status !== "running") {
-      console.warn(
-        `[sandpack-react]: dispatch cannot be called while in idle mode`,
-      );
+    // Before the client connects, buffer instead of dropping (R3-109): the
+    // message replays in FIFO order on connect. The gate is `connectedRef`, not
+    // `state.status`, because a client is created ("running") a moment before it
+    // actually connects, and delivery needs the live connection.
+    if (!connectedRef.current) {
+      preConnectQueue.current!.enqueue({ message, clientId });
       return;
     }
 
-    if (clientId) {
-      clients.current[clientId].dispatch(message);
-    } else {
-      Object.values(clients.current).forEach((client) => {
-        client.dispatch(message);
-      });
-    }
+    deliverDispatch({ message, clientId });
   };
 
   const addListener = (

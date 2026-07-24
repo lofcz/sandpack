@@ -1,3 +1,7 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream — the "Open in CodeSandbox" branded affordance is
+// not an immediately.run feature; site-main gates it off via showOpenInCodeSandbox:false. Reachable
+// from Preview, so flag-only (do not remove — it would break Preview's import). See
+// DEPRECATION_CANDIDATES.md.
 import type { JSX } from "react";
 
 import {

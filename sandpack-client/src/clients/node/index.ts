@@ -1,3 +1,7 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream — the Nodebox remote-VM client targets a
+// different execution model (immediately.run uses the in-browser bundler). Not in the
+// site-main import closure; G1/T1-exempt. See DEPRECATION_CANDIDATES.md. Flag-only, do
+// not remove (referenced by clients/index.ts dispatch + the G1/T1 test's exempt set).
 import { PREVIEW_LOADED_MESSAGE_TYPE, Nodebox } from "@codesandbox/nodebox";
 import type { ShellProcess, FSWatchEvent } from "@codesandbox/nodebox";
 import type { ShellCommandOptions } from "@codesandbox/nodebox/build/modules/shell";

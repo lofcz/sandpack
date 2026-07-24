@@ -6,7 +6,7 @@ import type { SandpackFS } from "@lofcz/sandpack-client";
 import React from "react";
 
 import type { UseSandpack } from "..";
-import { REACT_TEMPLATE, useSandpack } from "..";
+import { useSandpack } from "..";
 
 import { createSandpackFS } from "../utils/createSandpackFS";
 import { SandpackProvider } from "./sandpackContext";
@@ -136,63 +136,24 @@ describe(SandpackProvider, () => {
   });
 
   describe("editorState", () => {
-    it("should return the same initial state", async () => {
+    // `editorState` is now a constant `pristine`. The old dirty-tracking
+    // re-read the entire filesystem on every mutation to feed a cosmetic CSS
+    // class; immediately.run tracks real dirty state itself, so the read was
+    // removed (R3 sandpack unnecessary-reads).
+    it("is pristine initially", async () => {
       const instance = await createContext();
 
       expect(instance.current.sandpack.editorState).toBe("pristine");
     });
 
-    it("should return a dirty value after updating a file", async () => {
+    it("stays pristine after updating a file (no whole-tree dirty read)", async () => {
       const instance = await createContext();
-
-      expect(instance.current.sandpack.editorState).toBe("pristine");
 
       await act(async () => {
         await instance.current.sandpack.updateFile("/App.js", "Foo");
       });
 
-      await waitFor(() =>
-        expect(instance.current.sandpack.editorState).toBe("dirty"),
-      );
-    });
-
-    it("should return a pristine value after reset files", async () => {
-      const instance = await createContext();
-
-      expect(instance.current.sandpack.editorState).toBe("pristine");
-      await act(async () => {
-        await instance.current.sandpack.updateFile("/App.js", "Foo");
-      });
-      await waitFor(() =>
-        expect(instance.current.sandpack.editorState).toBe("dirty"),
-      );
-
-      await act(async () => {
-        await instance.current.sandpack.resetAllFiles();
-      });
-      await waitFor(() =>
-        expect(instance.current.sandpack.editorState).toBe("pristine"),
-      );
-    });
-
-    it("should return a pristine value after reverting a change", async () => {
-      const instance = await createContext();
-      expect(instance.current.sandpack.editorState).toBe("pristine");
-
-      await act(async () => {
-        await instance.current.sandpack.updateFile("/App.js", "Foo");
-      });
-      await waitFor(() =>
-        expect(instance.current.sandpack.editorState).toBe("dirty"),
-      );
-
-      await act(async () => {
-        await instance.current.sandpack.updateFile(
-          "/App.js",
-          REACT_TEMPLATE["files"]["/App.js"].code,
-        );
-      });
-
+      // Give any stray async work a chance to (incorrectly) flip the flag.
       await waitFor(() =>
         expect(instance.current.sandpack.editorState).toBe("pristine"),
       );

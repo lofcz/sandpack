@@ -1,3 +1,6 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream — in-preview jest test-runner UI, not used by
+// immediately.run (reachable only via the unused <Sandpack> preset; see
+// DEPRECATION_CANDIDATES.md); flag-only, do not remove.
 import * as React from "react";
 
 import { useSandpackTheme, useSandpackClient } from "../../hooks";

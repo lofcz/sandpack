@@ -1,5 +1,5 @@
-import { dracula } from "@codesandbox/sandpack-themes";
-import * as themes from "@codesandbox/sandpack-themes";
+import { dracula } from "@lofcz/sandpack-themes";
+import * as themes from "@lofcz/sandpack-themes";
 import type { CSSProperties } from "@stitches/core";
 import * as React from "react";
 

@@ -4,7 +4,7 @@
  * with the contents of the CSS asset emitted by `@vanilla-extract/rollup-plugin`
  * (its `extract` option). This keeps `getSandpackCssText()` working for SSR
  * consumers, even though the canonical way to ship Sandpack styles is now an
- * `import "@codesandbox/sandpack-react/styles.css"`.
+ * `import "@lofcz/sandpack-react/styles.css"`.
  */
 const PLACEHOLDER = "@@SANDPACK_INLINE_CSS_TEXT@@";
 

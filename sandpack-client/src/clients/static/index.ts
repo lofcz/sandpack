@@ -1,4 +1,8 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+// DEAD-CANDIDATE(2026-06): inherited upstream — the static-HTML client (no transpilation)
+// is not used by immediately.run's live-bundled flow. Not in the site-main import closure.
+// See DEPRECATION_CANDIDATES.md. Flag-only, do NOT remove: clients/index.ts dispatches to it
+// and no-raw-app-iframe.test.ts asserts this file is present in its scan path.
 import type { FileContent } from "static-browser-server";
 import { PreviewController } from "static-browser-server";
 
@@ -12,8 +16,8 @@ import type {
 // @ts-ignore
 import consoleHook from "../../inject-scripts/dist/consoleHook.js";
 import { SandpackClient } from "../base";
-import { createSandboxedIframe, ensureSandboxed } from "../iframe-factory";
 import { EventEmitter } from "../event-emitter";
+import { createSandboxedIframe, ensureSandboxed } from "../iframe-factory";
 import { generateRandomId } from "../node/client.utils";
 import type { SandpackNodeMessage } from "../node/types";
 
@@ -87,13 +91,13 @@ export class SandpackStatic extends SandpackClient {
       this.element = element!;
       // Opaque-origin app iframe via the single factory (G1/T1) — untrusted
       // preview content runs at an opaque origin (see the runtime client).
-      this.iframe = createSandboxedIframe();
+      this.iframe = createSandboxedIframe(document, this.options.stance);
     } else {
       this.element = selector;
       this.iframe = selector;
     }
     // Set-and-assert: harden a host-provided iframe; verify no allow-same-origin.
-    ensureSandboxed(this.iframe);
+    ensureSandboxed(this.iframe, this.options.stance);
 
     this.eventListener = this.eventListener.bind(this);
     if (typeof window !== "undefined") {

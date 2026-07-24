@@ -1,3 +1,6 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream template — immediately.run runs only React+TS
+// apps; never selected (the "vanilla" JS template is the no-template fallback, this TS one is not).
+// See DEPRECATION_CANDIDATES.md. Flag-only.
 import { commonFiles } from "../common";
 
 export const VANILLA_TYPESCRIPT_TEMPLATE = {

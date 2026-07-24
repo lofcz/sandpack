@@ -1,3 +1,5 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream template — immediately.run uses the "react-ts"
+// (TypeScript) template, not this JS one; never selected. See DEPRECATION_CANDIDATES.md. Flag-only.
 import { commonFiles } from "../common";
 
 export const REACT_TEMPLATE = {

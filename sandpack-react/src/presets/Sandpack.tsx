@@ -12,6 +12,8 @@ import { RoundedButton } from "../components/common/RoundedButton";
 import { ConsoleIcon } from "../components/icons";
 import { SandpackProvider } from "../contexts/sandpackContext";
 import { THEME_PREFIX } from "../styles";
+import type { SandpackInternal, SandpackInternalOptions } from "../types";
+import { useClassNames } from "../utils/classNames";
 
 import {
   buttonCounter,
@@ -19,8 +21,6 @@ import {
   dragHandler,
   rtlLayoutClassName,
 } from "./Sandpack.css";
-import type { SandpackInternal, SandpackInternalOptions } from "../types";
-import { useClassNames } from "../utils/classNames";
 
 export const Sandpack: SandpackInternal = ({
   options,

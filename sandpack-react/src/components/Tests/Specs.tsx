@@ -8,13 +8,6 @@ import type { Describe } from "./Describes";
 import { Describes } from "./Describes";
 import { FormattedError } from "./FormattedError";
 import type { Status } from "./SandpackTests";
-import { Tests } from "./Tests";
-import {
-  failBackgroundClassName,
-  failTextClassName,
-  passBackgroundClassName,
-  runBackgroundClassName,
-} from "./style";
 import {
   failTestClassName,
   fileContainer,
@@ -25,6 +18,13 @@ import {
   labelClassName,
   specLabelClassName,
 } from "./Specs.css";
+import { Tests } from "./Tests";
+import {
+  failBackgroundClassName,
+  failTextClassName,
+  passBackgroundClassName,
+  runBackgroundClassName,
+} from "./style";
 import { getFailingTests, getSpecTestResults, isEmpty } from "./utils";
 
 export type Spec = { error?: TestError } & Describe;

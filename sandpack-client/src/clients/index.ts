@@ -3,6 +3,7 @@ import type { ClientOptions, SandboxSetup } from "../types";
 import type { SandpackClient as SandpackClientBase } from "./base";
 
 export type { SandpackClient } from "./base";
+export type { FrameStance } from "./iframe-factory";
 
 export async function loadSandpackClient(
   iframeSelector: string | HTMLIFrameElement,

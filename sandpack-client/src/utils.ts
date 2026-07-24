@@ -1,6 +1,6 @@
 import { invariant } from "outvariant";
 
-import type { SandpackFS, SandpackFilesInput } from "./fs/SandpackFS";
+import type { SandpackFilesInput } from "./fs/SandpackFS";
 import type {
   Dependencies,
   SandpackErrorMessage,
@@ -38,74 +38,14 @@ export function createPackageJSON(
 }
 
 /**
- * Ensures a `/package.json` exists inside the given {@link SandpackFS}, merging
- * any supplied dependency / entry overrides. Mutates the filesystem in place.
- */
-export async function addPackageJSONIfNeeded(
-  fs: SandpackFS,
-  dependencies?: Dependencies,
-  devDependencies?: Dependencies,
-  entry?: string,
-): Promise<void> {
-  const hasPkg = await fs.exists("/package.json");
-
-  if (!hasPkg) {
-    nullthrows(dependencies, DEPENDENCY_ERROR_MESSAGE);
-    nullthrows(entry, ENTRY_ERROR_MESSAGE);
-
-    await fs.writeFile(
-      "/package.json",
-      createPackageJSON(dependencies, devDependencies, entry),
-    );
-    return;
-  }
-
-  const existing = await fs.readFile("/package.json");
-  const packageJsonContent = JSON.parse(existing);
-  // This runs on every register-frame handshake. Only write the file back if
-  // the merge below actually changed something: an unconditional rewrite fires
-  // the shared filesystem's change watcher, which relays an `fs-change` to the
-  // bundler right after it booted — forcing a reload whose handshake rewrites
-  // package.json again, i.e. an infinite reload loop.
-  const beforeMerge = JSON.stringify(packageJsonContent);
-
-  if (!dependencies && !packageJsonContent.dependencies) {
-    throw new Error(createError(ENTRY_ERROR_MESSAGE));
-  }
-
-  if (dependencies) {
-    packageJsonContent.dependencies = {
-      ...(packageJsonContent.dependencies ?? {}),
-      ...dependencies,
-    };
-  }
-
-  if (devDependencies) {
-    packageJsonContent.devDependencies = {
-      ...(packageJsonContent.devDependencies ?? {}),
-      ...devDependencies,
-    };
-  }
-
-  if (entry) {
-    packageJsonContent.main = entry;
-  }
-
-  if (JSON.stringify(packageJsonContent) === beforeMerge) {
-    return;
-  }
-
-  await fs.writeFile(
-    "/package.json",
-    JSON.stringify(packageJsonContent, null, 2),
-  );
-}
-
-/**
- * Sync variant of {@link addPackageJSONIfNeeded} that operates on a plain
- * {@link SandpackFilesInput} map (pre-filesystem). Useful in pure planners
- * like `getSandpackStateFromProps` so callers can decide what to seed the
- * filesystem with before any I/O happens.
+ * Ensures a `/package.json` exists inside a plain {@link SandpackFilesInput}
+ * map (pre-filesystem), merging any supplied dependency / entry overrides.
+ * Useful in pure planners like `getSandpackStateFromProps` so callers can decide
+ * what to seed the filesystem with before any I/O happens.
+ *
+ * (The former filesystem-mutating variant `addPackageJSONIfNeeded(fs, …)` was
+ * removed with BOOT_SCAFFOLDING_SPEC §3: the resolved package.json is delivered
+ * to the bundler out-of-band, so no synthesized copy is written into the CoW.)
  */
 export function addPackageJSONIfNeededToMap(
   files: SandpackFilesInput,

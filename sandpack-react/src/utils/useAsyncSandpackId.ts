@@ -22,6 +22,15 @@ const MAX_ID_LENGTH = 9;
 const sandpackClientVersion = process.env.SANDPACK_CLIENT_VERSION;
 
 /**
+ * A throwaway, MAX_ID_LENGTH-character id that does NOT touch the filesystem.
+ * Use this wherever a content-derived id isn't actually needed (e.g. when the
+ * service worker is disabled), so we don't walk the file list and read every
+ * file just to hash an id the bundler will ignore.
+ */
+export const cheapSandpackId = (): string =>
+  ensureLength(generateRandomId(), MAX_ID_LENGTH);
+
+/**
  * Produces a stable id derived from the current filesystem contents. The
  * snapshot is only materialized when the returned thunk is called, so we
  * don't pay for the read unless a stable service-worker id is requested.

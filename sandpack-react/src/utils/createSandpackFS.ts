@@ -4,6 +4,7 @@ import {
   addPackageJSONIfNeededToMap,
   normalizePath,
 } from "@lofcz/sandpack-client/utils";
+import type { BoundContext } from "@zenfs/core";
 
 import { SANDBOX_TEMPLATES } from "../templates";
 import type {
@@ -12,7 +13,6 @@ import type {
   SandpackPredefinedTemplate,
   SandpackSetup,
 } from "../types";
-import { BoundContext } from "@zenfs/core";
 
 export interface SandboxTemplate {
   files: SandpackFilesInput;
@@ -155,8 +155,12 @@ export const createSandpackFromFS = (
   // _SPEC §5). Optional; omitting it preserves prior behavior.
   onWrite?: (path: string) => void,
 ): Promise<SandpackFS> => {
-  return SandpackFS.fromFileSystemContext(fsContext, remotePortFactory, onWrite);
-}
+  return SandpackFS.fromFileSystemContext(
+    fsContext,
+    remotePortFactory,
+    onWrite,
+  );
+};
 
 /**
  * Build a fully-initialized {@link SandpackFS} from the JS-object convenience

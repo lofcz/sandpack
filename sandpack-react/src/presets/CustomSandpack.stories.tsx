@@ -1,7 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 
-import { stackClassName } from "../";
-import { tabButton } from "../";
 import {
   Sandpack,
   SandpackPreview,
@@ -431,83 +429,6 @@ export const ClosableTabs: React.FC = () => {
       fs={fs}
       options={{ closableTabs: true, visibleFiles: ["/App.js", "/index.js"] }}
     />
-  );
-};
-
-const ResetButtonComp: React.FC = () => {
-  const { sandpack } = useSandpack();
-
-  return (
-    <button
-      className={tabButton.toString()}
-      onClick={sandpack.resetAllFiles}
-      style={{
-        background: "none",
-        border: 0,
-        position: "absolute",
-        right: "1em",
-      }}
-    >
-      Reset all file
-    </button>
-  );
-};
-
-const ResetCurrentFileButton: React.FC = () => {
-  const { sandpack } = useSandpack();
-
-  return (
-    <button
-      className={tabButton.toString()}
-      onClick={(): void => sandpack.resetFile(sandpack.activeFile)}
-      style={{
-        background: "none",
-        border: 0,
-        position: "absolute",
-        right: "1em",
-      }}
-    >
-      Reset current files
-    </button>
-  );
-};
-
-export const ResetButton: React.FC = () => {
-  const fs1 = useSandpackFS({ template: "react" });
-  const fs2 = useSandpackFS({ template: "react" });
-  if (!fs1 || !fs2) return null;
-  return (
-    <>
-      <SandpackProvider fs={fs1}>
-        <SandpackLayout>
-          <div
-            className={stackClassName.toString()}
-            style={{ position: "relative", width: "100%" }}
-          >
-            <SandpackCodeEditor />
-            <ResetButtonComp />
-          </div>
-          <SandpackStack>
-            <SandpackPreview />
-          </SandpackStack>
-        </SandpackLayout>
-      </SandpackProvider>
-
-      <SandpackProvider fs={fs2}>
-        <SandpackLayout>
-          <div
-            className={stackClassName.toString()}
-            style={{ position: "relative", width: "100%" }}
-          >
-            <SandpackCodeEditor />
-            <ResetCurrentFileButton />
-          </div>
-          <SandpackStack>
-            <SandpackPreview />
-          </SandpackStack>
-        </SandpackLayout>
-      </SandpackProvider>
-    </>
   );
 };
 

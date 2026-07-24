@@ -19,9 +19,9 @@ export class IFrameProtocol {
   // Random number to identify this instance of the client when messages are coming from multiple iframes
   readonly channelId: number = Math.floor(Math.random() * 1000000);
 
-  constructor(iframe: HTMLIFrameElement, origin: string) {
+  constructor(iframe: HTMLIFrameElement, _origin: string) {
     this.frameWindow = iframe.contentWindow;
-    this.origin = '*'; //origin;
+    this.origin = "*"; //origin;
     this.globalListeners = [];
     this.channelListeners = [];
 
@@ -54,14 +54,17 @@ export class IFrameProtocol {
       return;
     }
 
-    console.log("[IFrameProtocol] Registering iframe with channelId", this.channelId, this);
+    // eslint-disable-next-line no-console -- dev registration trace
+    console.log(
+      "[IFrameProtocol] Registering iframe with channelId",
+      this.channelId,
+      this,
+    );
 
     // Order matters: the bundler reads ports[0] as the fs port and ports[1] as
     // the Babel worker port. `filter` keeps that order as long as the fs port
     // is always present (it is, in normal operation).
-    const ports = [port, babelPort].filter(
-      (p): p is MessagePort => p != null,
-    );
+    const ports = [port, babelPort].filter((p): p is MessagePort => p != null);
 
     this.frameWindow.postMessage(
       {

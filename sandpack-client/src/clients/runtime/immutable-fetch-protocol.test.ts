@@ -7,10 +7,14 @@
  */
 import { handleImmutableFetch } from "./immutable-fetch-protocol";
 
-const ALLOWED = "https://immediately-run.github.io/immediately-run-sdk/v/0.8.0/runtime.js";
+const ALLOWED =
+  "https://immediately-run.github.io/immediately-run-sdk/v/0.8.0/runtime.js";
 
 const sha384 = async (s: string): Promise<string> => {
-  const digest = await crypto.subtle.digest("SHA-384", new TextEncoder().encode(s));
+  const digest = await crypto.subtle.digest(
+    "SHA-384",
+    new TextEncoder().encode(s),
+  );
   let bin = "";
   const view = new Uint8Array(digest);
   for (let i = 0; i < view.length; i++) bin += String.fromCharCode(view[i]);
@@ -45,11 +49,15 @@ describe("handleImmutableFetch — integrity-aware caching", () => {
     (globalThis as any).fetch = async () => {
       const body = fetchBodies[Math.min(fetchCalls, fetchBodies.length - 1)];
       fetchCalls++;
-      return new Response(body, { status: 200, headers: { "content-type": "text/javascript" } });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/javascript" },
+      });
     };
   });
 
-  const bodyOf = async (r: { body: ArrayBuffer }) => new TextDecoder().decode(r.body);
+  const bodyOf = async (r: { body: ArrayBuffer }) =>
+    new TextDecoder().decode(r.body);
 
   it("verify-before-cache: mismatched bytes are returned but NEVER cached", async () => {
     fetchBodies = ["BAD-BYTES"];
@@ -80,7 +88,9 @@ describe("handleImmutableFetch — integrity-aware caching", () => {
     const res = await handleImmutableFetch(ALLOWED, newSri);
     expect(await bodyOf(res)).toBe("NEW-BYTES"); // refetched, not the stale hit
     expect(fetchCalls).toBe(1); // hit was rejected → one network fetch
-    expect(new TextDecoder().decode(cache.store.get(ALLOWED)!)).toBe("NEW-BYTES"); // re-cached verified
+    expect(new TextDecoder().decode(cache.store.get(ALLOWED)!)).toBe(
+      "NEW-BYTES",
+    ); // re-cached verified
   });
 
   it("without an integrity arg, caches by URL (legacy behavior preserved)", async () => {
@@ -90,6 +100,8 @@ describe("handleImmutableFetch — integrity-aware caching", () => {
   });
 
   it("rejects URLs outside the allowlist", async () => {
-    await expect(handleImmutableFetch("https://evil.example/x.js")).rejects.toThrow(/not allowed/i);
+    await expect(
+      handleImmutableFetch("https://evil.example/x.js"),
+    ).rejects.toThrow(/not allowed/i);
   });
 });

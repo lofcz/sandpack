@@ -1,3 +1,5 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream — not used by immediately.run (see
+// DEPRECATION_CANDIDATES.md, sandpack-react components); flag-only, do not remove.
 import * as React from "react";
 
 import { useSandpack } from "../../hooks/useSandpack";
@@ -14,7 +16,8 @@ import { transpiledCodeClassName } from "./TranspiledCode.css";
 export const SandpackTranspiledCode = ({
   className,
   ...props
-}: CodeViewerProps & React.HTMLAttributes<HTMLDivElement>): React.JSX.Element => {
+}: CodeViewerProps &
+  React.HTMLAttributes<HTMLDivElement>): React.JSX.Element => {
   const { sandpack } = useSandpack();
   const transpiledCode = useTranspiledCode();
   const classNames = useClassNames();

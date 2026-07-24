@@ -1,3 +1,5 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream — not used by immediately.run (site-main
+// has its own file-explorer system app; see DEPRECATION_CANDIDATES.md); flag-only, do not remove.
 import * as React from "react";
 
 import { useSandpack } from "../../hooks/useSandpack";

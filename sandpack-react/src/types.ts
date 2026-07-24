@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 import type { LanguageSupport } from "@codemirror/language";
 import type {
   BundlerState,
@@ -15,6 +13,7 @@ import type {
   FsSnapshot,
   UnsubscribeFunction,
   SandpackLogLevel,
+  FrameStance,
 } from "@lofcz/sandpack-client";
 import type React from "react";
 
@@ -22,7 +21,6 @@ import type { ClientPropsOverride } from "./contexts/utils/useClient";
 import type { SANDBOX_TEMPLATES } from "./templates";
 
 import type { CodeEditorProps } from ".";
-import type { BoundContext } from "@zenfs/core";
 
 /**
  * ------------------------ Public documentation ------------------------
@@ -165,6 +163,13 @@ export interface SandpackOptions {
   bundlerURL?: string;
   babelWorkerURL?: string;
   startRoute?: string;
+  /**
+   * The app's resolved trust stance (TRUST_MODES_SPEC §3 / R3-195). Forwarded to
+   * the client so an `"M3"` (stranger) app is emitted with the hardened iframe
+   * sandbox/allow attributes; absent or M0–M2 keeps the exact baseline. Host-
+   * resolved only — an app never sets its own stance.
+   */
+  stance?: FrameStance;
   skipEval?: boolean;
   externalResources?: string[];
 }
@@ -365,6 +370,13 @@ export interface SandpackInternalOptions {
   babelWorkerURL?: string;
   bundlerTimeOut?: number;
   startRoute?: string;
+  /**
+   * The app's resolved trust stance (TRUST_MODES_SPEC §3 / R3-195). Forwarded to
+   * the client so an `"M3"` (stranger) app is emitted with the hardened iframe
+   * sandbox/allow attributes; absent or M0–M2 keeps the exact baseline. Host-
+   * resolved only — an app never sets its own stance.
+   */
+  stance?: FrameStance;
   skipEval?: boolean;
   externalResources?: string[];
   classes?: Record<string, string>;
@@ -384,12 +396,28 @@ export interface SandpackInternalOptions {
    */
   dirtyPaths?: string[];
   /**
+   * The parent's per-commit distrust mark (PRETRANSPILED_ARTIFACTS_SPEC §5.7),
+   * forwarded to the runtime client and on to the bundler. When `true`, a prior
+   * session's spot-verification caught a tampered artifact for this commit, so the
+   * bundler treats the zip's artifact section as absent and transpiles live.
+   * Absent/false ⇒ artifacts trusted.
+   */
+  distrustArtifacts?: boolean;
+  /**
    * R3-49b ZenFS batch hydration: a bulk snapshot of the mounted tree, forwarded to
    * the runtime client and on to the bundler, which hydrates its read caches before
    * the first compile so reads come from memory instead of per-file Port round-trips.
    * Absent ⇒ reads cross the Port as before.
    */
   fsSnapshot?: FsSnapshot;
+  /**
+   * The chrome region this app instance occupies, e.g. `"panel.agent"` or
+   * `"stage.conversation"` (R3-114). Forwarded to the runtime client and on to the
+   * bundler, which surfaces it on the `__immediatelyRun__` runtime global for the
+   * SDK's `getRegion()`/`useRegion()`. Descriptive only — grants and gates nothing.
+   * Absent ⇒ the app reads no region.
+   */
+  region?: string;
 }
 
 interface SandpackInternalProps extends SandpackRootProps {
@@ -536,8 +564,6 @@ export interface SandpackState {
   closeFile: (path: string) => void;
   deleteFile: (path: string, shouldUpdatePreview?: boolean) => Promise<void>;
   setActiveFile: (path: string) => void;
-  resetFile: (path: string) => Promise<void>;
-  resetAllFiles: () => Promise<void>;
   registerReactDevTools: (value: ReactDevToolsMode) => void;
   /**
    * Element refs

@@ -1,4 +1,4 @@
-import * as allThemes from "@codesandbox/sandpack-themes";
+import * as allThemes from "@lofcz/sandpack-themes";
 import { storiesOf } from "@storybook/react";
 import React from "react";
 

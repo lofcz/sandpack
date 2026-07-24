@@ -11,12 +11,12 @@ import { SandpackStack, DependenciesProgress, RoundedButton } from "../common";
 import { CleanIcon, RestartIcon } from "../icons";
 
 import { ConsoleList } from "./ConsoleList";
+import { Header } from "./Header";
 import {
   consoleActionsClassName,
   consoleListClassName,
   consoleWrapperClassName,
 } from "./SandpackConsole.css";
-import { Header } from "./Header";
 import { StdoutList } from "./StdoutList";
 import { useSandpackConsole } from "./useSandpackConsole";
 import type { SandpackConsoleData } from "./utils/getType";

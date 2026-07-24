@@ -15,17 +15,13 @@ import type {
   UnsubscribeFunction,
 } from "../../types";
 import { SandpackLogLevel } from "../../types";
-import {
-  extractErrorDetails,
-  createPackageJSON,
-  addPackageJSONIfNeeded,
-} from "../../utils";
+import { extractErrorDetails, createPackageJSON } from "../../utils";
 import { SandpackClient } from "../base";
 import { createSandboxedIframe, ensureSandboxed } from "../iframe-factory";
 
 import Protocol from "./file-resolver-protocol";
-import { handleImmutableFetch } from "./immutable-fetch-protocol";
 import { IFrameProtocol } from "./iframe-protocol";
+import { handleImmutableFetch } from "./immutable-fetch-protocol";
 import { EXTENSIONS_MAP } from "./mime";
 import type { IPreviewRequestMessage, IPreviewResponseMessage } from "./types";
 import { CHANNEL_NAME, type SandpackRuntimeMessage } from "./types";
@@ -59,7 +55,6 @@ export class SandpackRuntime extends SandpackClient {
   /** Parent-owned Babel transpiler worker, connected to the iframe by port. */
   private babelWorker: Worker | null = null;
 
-
   constructor(
     selector: string | HTMLIFrameElement,
     sandboxSetup: SandboxSetup,
@@ -87,7 +82,7 @@ export class SandpackRuntime extends SandpackClient {
       // touch shared storage on the bundler origin. The Babel worker that used
       // to require same-origin is now owned by the parent and reached over a
       // transferred `MessagePort` (see `createBabelWorkerPort`).
-      this.iframe = createSandboxedIframe();
+      this.iframe = createSandboxedIframe(document, this.options.stance);
       this.initializeElement();
     } else {
       this.element = selector;
@@ -95,7 +90,7 @@ export class SandpackRuntime extends SandpackClient {
     }
     // Set-and-assert: a host-provided iframe is hardened here, and any iframe
     // (created or passed) is verified to carry no `allow-same-origin`.
-    ensureSandboxed(this.iframe);
+    ensureSandboxed(this.iframe, this.options.stance);
 
     this.setLocationURLIntoIFrame();
 
@@ -103,7 +98,6 @@ export class SandpackRuntime extends SandpackClient {
 
     this.unsubscribeGlobalListener = this.iframeProtocol.globalListen(
       (mes: SandpackMessage) => {
-        console.log("[SandpackRuntime] Global message listener received message", mes);
         if (mes.type !== "initialized" || !this.iframe.contentWindow) {
           return;
         }
@@ -165,7 +159,7 @@ export class SandpackRuntime extends SandpackClient {
           // port as the second port in the handshake.
           const babelPort = this.createBabelWorkerPort();
           this.iframeProtocol.register(remotePort, config, babelPort);
-        })
+        });
       },
     );
 
@@ -420,21 +414,18 @@ export class SandpackRuntime extends SandpackClient {
     logLevel: SandpackLogLevel;
     sdkIntegrity?: SdkIntegrity;
     dirtyPaths?: string[];
+    distrustArtifacts?: boolean;
     fsSnapshot?: FsSnapshot;
+    region?: string;
+    packageJSON?: Record<string, unknown>;
   }> {
     const fs = this.sandboxSetup.fs;
 
-    await addPackageJSONIfNeeded(
-      fs,
-      this.sandboxSetup.dependencies,
-      this.sandboxSetup.devDependencies,
-      this.sandboxSetup.entry,
-    ).catch(() => {
-      // addPackageJSONIfNeeded throws when it can't infer a package.json. At
-      // this point we've already accepted whatever the user provided, so we
-      // log and move on.
-    });
-
+    // BOOT_SCAFFOLDING_SPEC §3 — the resolved package.json is delivered to the
+    // bundler OUT-OF-BAND in this config (`packageJSON` below), so we no longer
+    // write a synthesized copy into the shared filesystem. (The old
+    // `addPackageJSONIfNeeded(fs, …)` write is what put `package.json` into the
+    // CoW writable layer and forced the rewrite-loop guard.)
     let packageJSON = JSON.parse(
       createPackageJSON(
         this.sandboxSetup.dependencies,
@@ -473,10 +464,24 @@ export class SandpackRuntime extends SandpackClient {
       // skips seeding artifacts for paths edited in a previous session. Absent ⇒
       // nothing dirty.
       dirtyPaths: this.options.dirtyPaths,
+      // The §5.7 per-commit distrust mark, forwarded verbatim into register-frame so
+      // the bundler ignores the zip's artifact section when a prior session caught a
+      // tampered artifact for this commit. Absent/false ⇒ artifacts trusted.
+      distrustArtifacts: this.options.distrustArtifacts,
       // R3-49b batch-hydration snapshot, forwarded verbatim into register-frame so
       // the bundler hydrates its read caches before the first compile. Absent ⇒
       // reads cross the Port as before.
       fsSnapshot: this.options.fsSnapshot,
+      // The chrome region this frame occupies (R3-114), forwarded verbatim into
+      // register-frame so the bundler surfaces it on the runtime global for the
+      // SDK's getRegion(). Absent ⇒ the app reads no region.
+      region: this.options.region,
+      // BOOT_SCAFFOLDING_SPEC §3 — the resolved root package.json, forwarded
+      // out-of-band so the bundler reads it from config instead of the FS and no
+      // synthesized `package.json` is written into the CoW writable layer. This
+      // is the same object `getTemplate` consumes above (the repo's file when
+      // present, else the setup-derived default).
+      packageJSON,
     };
   }
 

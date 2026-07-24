@@ -2,7 +2,7 @@ import {
   InMemory,
   resolveMountConfig,
   mount,
-  BoundContext,
+  type BoundContext,
   bindContext,
 } from "@zenfs/core";
 
@@ -32,6 +32,68 @@ interface MetaSidecar {
  */
 export const META_PATH = "/.sandpack/meta.json";
 const META_DIR = "/.sandpack";
+
+/**
+ * Dev-only flag, using the standard `process.env.NODE_ENV` convention. This dist is
+ * always consumed by a bundler (site-main, the sandbox) that statically replaces
+ * `process.env.NODE_ENV`, so in a production build this folds to `false` and the
+ * `if (IS_DEV)` branch — with the whole {@link installOutOfBandGuard} function it is
+ * the only reference to — is dead-code-eliminated (verified with terser: the
+ * assertion string is absent once `NODE_ENV="production"`). The bare form (no
+ * `typeof` guard) is what lets it fold to a literal; a `typeof process` guard would
+ * defeat the elimination.
+ */
+const IS_DEV = process.env.NODE_ENV !== "production";
+
+/**
+ * The ZenFS `fs.promises` methods that mutate the store. In dev these are wrapped
+ * (see {@link installOutOfBandGuard}) so a write that reaches this instance's
+ * bound-context fs **without** going through `SandpackFS.writeFile` is caught.
+ * Reads (`readFile`/`readdir`/`stat`) are never guarded.
+ */
+const GUARDED_WRITE_METHODS = [
+  "writeFile",
+  "unlink",
+  "mkdir",
+  "rename",
+  "appendFile",
+  "truncate",
+  "rm",
+  "rmdir",
+] as const;
+
+/**
+ * Dev-only. Wrap the store-mutating methods on a SandpackFS instance's
+ * bound-context `fs.promises` so any write that did **not** go through
+ * `SandpackFS.writeFile` / `handleRemoteChange` (those use captured raw methods,
+ * which stay unwrapped) emits a single loud `console.error` naming the offending
+ * method + path, then still performs the write. Enforces the class writer invariant
+ * (roadmap R3-110).
+ *
+ * This is a module-level function (not a class method) and its **only** reference
+ * is behind the `if (IS_DEV)` branch in the constructor — so once a consumer's
+ * production build folds `IS_DEV` to `false`, the branch and this whole function
+ * tree-shake away (a class method would be retained). No-op in production.
+ */
+function installOutOfBandGuard(fsContext: BoundContext): void {
+  const p = fsContext.fs.promises as unknown as Record<string, unknown>;
+  for (const method of GUARDED_WRITE_METHODS) {
+    const original = p[method];
+    if (typeof original !== "function") continue;
+    const call = original as (...args: unknown[]) => unknown;
+    p[method] = (...args: unknown[]) => {
+      console.error(
+        `[SandpackFS] out-of-band write: '${method}(${String(
+          args[0],
+        )})' bypassed SandpackFS.writeFile()/handleRemoteChange(), so it emits ` +
+          `no onChange — the editor view and bundler relay will miss it. Route the ` +
+          `write through SandpackFS (EDITOR_AS_APP_SPEC D-EDIT-1 writer invariant; ` +
+          `LOCAL_DEVELOPMENT_SPEC §6.5).`,
+      );
+      return call.apply(p, args);
+    };
+  }
+}
 
 /**
  * A filesystem change. `external` is `true` when the change originated from the
@@ -69,6 +131,20 @@ const normalize = (path: string): string =>
  * All reads / writes are async. Changes emit a single coalesced notification
  * (watcher or explicit helper calls) so React can subscribe via
  * `useSyncExternalStore`.
+ *
+ * ## Writer invariant (why every mutation must funnel through here)
+ *
+ * The ZenFS `Port` backend does **not** forward watch events across the iframe
+ * boundary, so **every** independent mutator of the shared store MUST route through
+ * {@link SandpackFS.writeFile} (local edits → `external: false`) or
+ * {@link SandpackFS.handleRemoteChange} (iframe edits relayed by the host's
+ * `exportZenFS` → `external: true`). A write that reaches this instance's
+ * bound-context fs by any other path emits no `onChange`, so the editor view and
+ * the bundler relay silently miss it. This is the conflict-model writer invariant
+ * spec'd in **`EDITOR_AS_APP_SPEC.md` → Decisions & rejected alternatives D-EDIT-1**
+ * ("Conflict-model note (writer invariant)") and **`LOCAL_DEVELOPMENT_SPEC.md` §6.5**.
+ * In dev, {@link installOutOfBandGuard} turns that convention into a loud
+ * assertion (roadmap R3-110); in production the guard is compiled out.
  */
 export class SandpackFS {
   private readonly listeners = new Set<SandpackFSListener>();
@@ -77,17 +153,38 @@ export class SandpackFS {
   private sidecarMode: string | undefined = undefined;
   private disposed = false;
 
+  // Raw (unguarded) fs write methods captured at construction, bound to this
+  // instance's bound-context `promises`. SandpackFS's own writes go through these
+  // so they never trip the dev out-of-band guard, which is installed *on*
+  // `fsContext.fs.promises` (the object external callers reach via the public
+  // `fsContext`). Reads keep using `fsContext.fs.promises` directly (unguarded).
+  private readonly rawWriteFile: (path: string, data: string) => Promise<void>;
+  private readonly rawUnlink: (path: string) => Promise<void>;
+  private readonly rawMkdir: (
+    path: string,
+    opts?: { recursive?: boolean },
+  ) => Promise<unknown>;
+
   private constructor(
     public readonly fsContext: BoundContext,
     public readonly remotePortFactory: (
-      onRemoteChange: (path: string) => void
+      onRemoteChange: (path: string) => void,
     ) => Promise<MessagePort>,
     // Invoked after a LOCAL editor write (writeFile) lands in the backing fs,
     // with the normalized repo-relative path. The host uses it to record overlay
     // provenance (COW_OVERLAY_PROVENANCE_SPEC §5 — the writer declares intent);
     // iframe writes go through `remotePortFactory`/`handleRemoteChange` instead.
-    private readonly onWrite?: (path: string) => void
+    private readonly onWrite?: (path: string) => void,
   ) {
+    const p = fsContext.fs.promises as unknown as {
+      writeFile: (path: string, data: string) => Promise<void>;
+      unlink: (path: string) => Promise<void>;
+      mkdir: (path: string, opts?: { recursive?: boolean }) => Promise<unknown>;
+    };
+    this.rawWriteFile = p.writeFile.bind(p);
+    this.rawUnlink = p.unlink.bind(p);
+    this.rawMkdir = p.mkdir.bind(p);
+    if (IS_DEV) installOutOfBandGuard(fsContext);
   }
 
   /**
@@ -108,9 +205,9 @@ export class SandpackFS {
     files: SandpackFilesInput = {},
     options: { environment?: string; mode?: string } = {},
     remotePortFactory: (
-      onRemoteChange: (path: string) => void
+      onRemoteChange: (path: string) => void,
     ) => Promise<MessagePort>,
-    onWrite?: (path: string) => void
+    onWrite?: (path: string) => void,
   ): Promise<SandpackFS> {
     const id = ++mountCounter;
     const prefix = `/__sandpack_${id}`;
@@ -137,12 +234,11 @@ export class SandpackFS {
    * store.
    */
   static async fromFileSystemContext(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     fsContext: BoundContext,
     remotePortFactory: (
-      onRemoteChange: (path: string) => void
+      onRemoteChange: (path: string) => void,
     ) => Promise<MessagePort>,
-    onWrite?: (path: string) => void
+    onWrite?: (path: string) => void,
   ): Promise<SandpackFS> {
     const instance = new SandpackFS(fsContext, remotePortFactory, onWrite);
     await instance.ensureMetaDir();
@@ -167,13 +263,16 @@ export class SandpackFS {
   }
 
   async readFile(path: string): Promise<string> {
-    return (await this.fsContext.fs.promises.readFile(this.toAbs(path), "utf8")) as string;
+    return (await this.fsContext.fs.promises.readFile(
+      this.toAbs(path),
+      "utf8",
+    )) as string;
   }
 
   async writeFile(path: string, content: string): Promise<void> {
     const abs = this.toAbs(path);
     await this.ensureParent(abs);
-    await this.fsContext.fs.promises.writeFile(abs, content);
+    await this.rawWriteFile(abs, content);
     const normalized = normalize(path);
     this.notify({ path: normalized, external: false });
     // A local editor write — declare it to the host's provenance recorder.
@@ -181,7 +280,7 @@ export class SandpackFS {
   }
 
   async unlink(path: string): Promise<void> {
-    await this.fsContext.fs.promises.unlink(this.toAbs(path));
+    await this.rawUnlink(this.toAbs(path));
 
     const normalized = normalize(path);
     if (normalized in this.metaCache) {
@@ -297,7 +396,7 @@ export class SandpackFS {
 
   private async ensureMetaDir(): Promise<void> {
     try {
-      await this.fsContext.fs.promises.mkdir(META_DIR, {
+      await this.rawMkdir(META_DIR, {
         recursive: true,
       });
     } catch {
@@ -311,7 +410,7 @@ export class SandpackFS {
     const dir = absPath.slice(0, lastSlash);
     if (!dir || dir === "/") return;
     try {
-      await this.fsContext.fs.promises.mkdir(dir, { recursive: true });
+      await this.rawMkdir(dir, { recursive: true });
     } catch {
       // exists
     }
@@ -356,7 +455,7 @@ export class SandpackFS {
       const abs = this.toAbs(path);
       await this.ensureParent(abs);
 
-      await this.fsContext.fs.promises.writeFile(abs, entry.code);
+      await this.rawWriteFile(abs, entry.code);
 
       const fileMeta: FileMeta = {};
       if (entry.hidden !== undefined) fileMeta.hidden = entry.hidden;
@@ -378,10 +477,7 @@ export class SandpackFS {
     if (this.sidecarMode !== undefined) {
       sidecar.mode = this.sidecarMode;
     }
-    await this.fsContext.fs.promises.writeFile(
-      this.toAbs(META_PATH),
-      JSON.stringify(sidecar),
-    );
+    await this.rawWriteFile(this.toAbs(META_PATH), JSON.stringify(sidecar));
   }
 
   private async refreshMetaCache(): Promise<void> {

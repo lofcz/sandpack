@@ -113,15 +113,14 @@ const configBase = [
     ],
   },
 
-{
-  input: "./dist/src/index.d.ts", 
-  output: {
-    file: "./dist/index.d.ts",
-    format: "es",
+  {
+    input: "./dist/src/index.d.ts",
+    output: {
+      file: "./dist/index.d.ts",
+      format: "es",
+    },
+    plugins: [dts()],
   },
-  plugins: [dts()],
-}
-
 ];
 
 module.exports = configBase;

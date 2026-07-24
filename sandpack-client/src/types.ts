@@ -1,3 +1,4 @@
+import type { FrameStance } from "./clients/iframe-factory";
 import type { SandpackNodeMessage } from "./clients/node/types";
 import type { SandpackRuntimeMessage } from "./clients/runtime/types";
 import type { SandpackFS } from "./fs/SandpackFS";
@@ -21,6 +22,14 @@ export interface ClientOptions {
    * Paths to external resources
    */
   externalResources?: string[];
+  /**
+   * The app's resolved trust stance (TRUST_MODES_SPEC §3 / R3-195). Only `"M3"`
+   * (a stranger's app) hardens the emitted iframe (sandbox flags + delegated
+   * features); absent or `"M0"`/`"M1"`/`"M2"` keeps the exact baseline. The host
+   * resolves this; the client never derives it. The per-frame M3 CSP is delivered
+   * with the frame's document (via `bundlerURL`), not here.
+   */
+  stance?: FrameStance;
   /**
    * Location of the bundler.
    */
@@ -116,6 +125,15 @@ export interface ClientOptions {
   dirtyPaths?: string[];
 
   /**
+   * The parent's per-commit distrust mark (PRETRANSPILED_ARTIFACTS_SPEC §5.7).
+   * When `true`, the host has recorded — keyed `(repo coords, commitSha)` — that a
+   * prior session's spot-verification caught a tampered artifact for this commit;
+   * forwarded verbatim into the register-frame handshake so the bundler treats the
+   * zip's artifact section as absent and transpiles live. Absent/false ⇒ trusted.
+   */
+  distrustArtifacts?: boolean;
+
+  /**
    * R3-49b ZenFS batch hydration: a bulk snapshot of the mounted tree (`/app`
    * source + bundled `/node_modules` package msgpack) forwarded verbatim into the
    * register-frame handshake. The bundler hydrates its read caches before the first
@@ -123,6 +141,15 @@ export interface ClientOptions {
    * (`loadNodeModules` — ~99% of cold boot). Absent ⇒ reads cross the Port as before.
    */
   fsSnapshot?: FsSnapshot;
+
+  /**
+   * The chrome region this app instance occupies, e.g. `"panel.agent"` or
+   * `"stage.conversation"` (R3-114). Forwarded verbatim into the register-frame
+   * handshake so the bundler can surface it on the `__immediatelyRun__` runtime
+   * global for the SDK's `getRegion()`/`useRegion()`. Descriptive only — it grants
+   * and gates nothing. Absent ⇒ the app reads no region (`getRegion()` → null).
+   */
+  region?: string;
 }
 
 /** A batch-hydration snapshot entry list: each entry is a sandbox `/app`-rooted path

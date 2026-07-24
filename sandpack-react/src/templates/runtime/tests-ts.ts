@@ -1,3 +1,5 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream template — immediately.run runs only React+TS
+// apps; the test-runner template is never selected. See DEPRECATION_CANDIDATES.md. Flag-only.
 export const TEST_TYPESCRIPT_TEMPLATE = {
   files: {
     "tsconfig.json": {

@@ -1,3 +1,8 @@
+// DEAD-CANDIDATE(2026-06): the entire @lofcz/sandpack-themes package is inherited upstream
+// and unused by immediately.run — site-main themes Sandpack via SandpackProvider props + its own
+// design-token theme (site-main/src/editor/chrome/sandpackTheme.ts), importing nothing from here.
+// Flag-only, do NOT remove: the package is still built by `yarn build` and shipped as a file: dep;
+// removing it changes the workspace/build set (SIMPLIFIED_DEPLOYMENT_SPEC §3). See DEPRECATION_CANDIDATES.md.
 export { amethyst } from "./amethyst";
 export { aquaBlue } from "./aquaBlue";
 export { atomDark } from "./atomDark";

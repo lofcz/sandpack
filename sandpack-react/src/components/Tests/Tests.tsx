@@ -4,17 +4,17 @@ import React from "react";
 import { useClassNames } from "../../utils/classNames";
 
 import {
-  failTextClassName,
-  passTextClassName,
-  skipTextClassName,
-} from "./style";
-import {
   containerClassName,
   durationClassName,
   gapRightClassName,
   testClassName,
   testContainerClassName,
 } from "./Tests.css";
+import {
+  failTextClassName,
+  passTextClassName,
+  skipTextClassName,
+} from "./style";
 
 type TestStatus = "idle" | "running" | "pass" | "fail";
 

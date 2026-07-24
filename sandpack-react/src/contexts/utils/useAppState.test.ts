@@ -19,7 +19,7 @@ describe(useAppState, () => {
     fs.dispose();
   });
 
-  it("starts pristine with a fresh filesystem", async () => {
+  it("reports pristine with a fresh filesystem", async () => {
     const { result } = renderHook(() =>
       useAppState({}, fs, Object.keys(VANILLA_TEMPLATE.files)),
     );
@@ -27,7 +27,12 @@ describe(useAppState, () => {
     await waitFor(() => expect(result.current.editorState).toBe("pristine"));
   });
 
-  it("flips to dirty when the filesystem is mutated", async () => {
+  it("stays pristine on mutation and never reads the filesystem", async () => {
+    // Regression guard: this hook must not snapshot or re-read the tree. The
+    // editor's real dirty state is tracked by the host, not here.
+    const readSpy = jest.spyOn(fs, "readFile");
+    const listSpy = jest.spyOn(fs, "list");
+
     const { result } = renderHook(() =>
       useAppState({}, fs, Object.keys(VANILLA_TEMPLATE.files)),
     );
@@ -38,26 +43,10 @@ describe(useAppState, () => {
       await fs.writeFile("/index.js", "UPDATED");
     });
 
-    await waitFor(() => expect(result.current.editorState).toBe("dirty"));
-  });
-
-  it("returns to pristine after reverting a change", async () => {
-    const { result } = renderHook(() =>
-      useAppState({}, fs, Object.keys(VANILLA_TEMPLATE.files)),
-    );
-
     await waitFor(() => expect(result.current.editorState).toBe("pristine"));
 
-    const original = VANILLA_TEMPLATE["files"]["/index.js"].code;
-
-    await act(async () => {
-      await fs.writeFile("/index.js", "UPDATED");
-    });
-    await waitFor(() => expect(result.current.editorState).toBe("dirty"));
-
-    await act(async () => {
-      await fs.writeFile("/index.js", original);
-    });
-    await waitFor(() => expect(result.current.editorState).toBe("pristine"));
+    // The hook itself must perform no enumeration or content reads.
+    expect(readSpy).not.toHaveBeenCalled();
+    expect(listSpy).not.toHaveBeenCalled();
   });
 });

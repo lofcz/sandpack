@@ -1,3 +1,5 @@
+// DEAD-CANDIDATE(2026-06): inherited upstream template — immediately.run runs only React+TS
+// apps; never selected. See DEPRECATION_CANDIDATES.md. Flag-only.
 import { commonFiles } from "../common";
 
 export const SVELTE_TEMPLATE = {
