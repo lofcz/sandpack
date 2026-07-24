@@ -412,6 +412,7 @@ export class SandpackRuntime extends SandpackClient {
   private async computeInitConfig(): Promise<{
     template?: string;
     logLevel: SandpackLogLevel;
+    sandpackCdnRoot?: string;
     sdkIntegrity?: SdkIntegrity;
     dirtyPaths?: string[];
     distrustArtifacts?: boolean;
@@ -479,6 +480,8 @@ export class SandpackRuntime extends SandpackClient {
       template:
         this.sandboxSetup.template || getTemplate(packageJSON, fileNameMap),
       logLevel: this.options.logLevel ?? SandpackLogLevel.Info,
+      // Self-hosted sandpack-cdn root — bundler must not use any public CDN.
+      sandpackCdnRoot: this.options.sandpackCdnRoot,
       // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), forwarded
       // verbatim into register-frame for the bundler to verify against. The host
       // sets it via client options; absent → the bundler skips verification.

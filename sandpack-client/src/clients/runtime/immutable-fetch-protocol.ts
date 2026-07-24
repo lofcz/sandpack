@@ -22,9 +22,6 @@
  * iframe's behalf, and they are safe to cache forever.
  */
 const IMMUTABLE_URL_ALLOWLIST = [
-  // Legacy public staging CDN (fallback when bundler couldn't derive a host).
-  // Prefer passing the Priprava `/sandpack-cdn/package/` prefix via ClientOptions.
-  "https://sandpack-cdn-staging.blazingly.io/package/",
   // unpkg files, requested by the bundler at registry-resolved exact versions.
   "https://unpkg.com/",
   // Self-hosted, versioned @lofcz/sdk builds (SDK_PACKAGING_SPEC

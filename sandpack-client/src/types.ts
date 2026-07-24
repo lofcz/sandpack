@@ -50,6 +50,12 @@ export interface ClientOptions {
    */
   immutableUrlPrefixes?: string[];
   /**
+   * Absolute root of the self-hosted sandpack-cdn (`…/sandpack-cdn/`).
+   * Forwarded on `register-frame` so the opaque-origin bundler never falls
+   * back to a public CDN. Required for Priprava self-hosting.
+   */
+  sandpackCdnRoot?: string;
+  /**
    * Level of logging to do in the bundler
    */
   logLevel?: SandpackLogLevel;
