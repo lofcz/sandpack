@@ -1,6 +1,6 @@
 {
   "name": "@lofcz/sandpack-client",
-  "version": "2.20.1",
+  "version": "2.20.2",
   "description": "Fork of @codesandbox/sandpack-client with ZenFS / immutable-fetch patches for sciobot",
   "keywords": [],
   "repository": {
