@@ -426,16 +426,39 @@ export class SandpackRuntime extends SandpackClient {
     // write a synthesized copy into the shared filesystem. (The old
     // `addPackageJSONIfNeeded(fs, …)` write is what put `package.json` into the
     // CoW writable layer and forced the rewrite-loop guard.)
-    let packageJSON = JSON.parse(
+    //
+    // Prefer the repo's FS package.json when present, but always merge the
+    // handshake `dependencies`/`devDependencies` on top — hosts inject
+    // platform-only packages (e.g. html-to-image for a preview bus) via setup
+    // without rewriting the user-facing manifest that landed in the FS.
+    const setupPackageJSON = JSON.parse(
       createPackageJSON(
         this.sandboxSetup.dependencies,
         this.sandboxSetup.devDependencies,
         this.sandboxSetup.entry,
       ),
-    );
+    ) as Record<string, unknown>;
+    let packageJSON: Record<string, unknown> = setupPackageJSON;
     try {
       if (await fs.exists("/package.json")) {
-        packageJSON = JSON.parse(await fs.readFile("/package.json"));
+        const fsPackageJSON = JSON.parse(
+          await fs.readFile("/package.json"),
+        ) as Record<string, unknown>;
+        packageJSON = {
+          ...setupPackageJSON,
+          ...fsPackageJSON,
+          dependencies: {
+            ...((fsPackageJSON.dependencies as Record<string, string>) ?? {}),
+            ...((setupPackageJSON.dependencies as Record<string, string>) ?? {}),
+          },
+          devDependencies: {
+            ...((fsPackageJSON.devDependencies as Record<string, string>) ?? {}),
+            ...((setupPackageJSON.devDependencies as Record<string, string>) ??
+              {}),
+          },
+          // Prefer the handshake entry (devtools wrapper) when the host set one.
+          main: setupPackageJSON.main ?? fsPackageJSON.main,
+        };
       }
     } catch (e) {
       console.error(

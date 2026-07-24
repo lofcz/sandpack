@@ -287,7 +287,9 @@ export type ClientStatus =
   | "evaluating"
   | "running-tests"
   | "idle"
-  | "done";
+  | "done"
+  /** Bundler is about to `location.reload()` (deps/HTML); not a terminal settle. */
+  | "reloading";
 
 export type SandpackMessageConsoleMethods =
   | "log"
