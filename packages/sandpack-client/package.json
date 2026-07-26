@@ -1,0 +1,90 @@
+{
+  "name": "@lofcz/sandpack-client",
+  "version": "2.20.2",
+  "description": "Fork of @codesandbox/sandpack-client with ZenFS / immutable-fetch patches for sciobot",
+  "keywords": [],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lofcz/sandpack.git",
+    "directory": "sandpack-client"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "author": "CodeSandbox",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./clients/runtime": {
+      "types": "./dist/clients/runtime/index.d.ts",
+      "import": "./dist/clients/runtime/index.mjs",
+      "require": "./dist/clients/runtime/index.js"
+    },
+    "./clients/node": {
+      "types": "./dist/clients/node/index.d.ts",
+      "import": "./dist/clients/node/index.mjs",
+      "require": "./dist/clients/node/index.js"
+    },
+    "./clients/static": {
+      "types": "./dist/clients/static/index.d.ts",
+      "import": "./dist/clients/static/index.mjs",
+      "require": "./dist/clients/static/index.js"
+    },
+    "./utils": {
+      "types": "./dist/utils.d.ts",
+      "import": "./dist/utils.mjs",
+      "require": "./dist/utils.js"
+    },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('sandpack',{recursive:true,force:true});require('fs').rmSync('src/clients/node/inject-scripts/dist',{recursive:true,force:true})\"",
+    "prebuild": "npm run clean",
+    "test": "jest . --transformIgnorePatterns \"node_modules/(?!@zenfs)/\"",
+    "lint": "eslint '**/*.ts?(x)' --fix",
+    "build": "rollup -c --bundleConfigAsCjs",
+    "build:publish": "npm run build && gulp",
+    "build:bundler": "gulp",
+    "format": "prettier --write '**/*.{ts,tsx,js,jsx}'",
+    "format:check": "prettier --check '**/*.{ts,tsx}'",
+    "dev": "npm run build -- --watch"
+  },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "@codesandbox/nodebox": "0.1.8",
+    "buffer": "^6.0.3",
+    "dequal": "^2.0.3",
+    "mime-db": "^1.53.0",
+    "outvariant": "^1.4.3",
+    "static-browser-server": "1.0.3"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.0",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-replace": "^6.0.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^12.1.0",
+    "@types/mime-db": "^1.43.6",
+    "@types/node": "^22.10.2",
+    "@zenfs/core": "~2.5.8",
+    "del": "^6.1.1",
+    "gulp": "^5.0.0",
+    "rollup": "^4.24.0",
+    "rollup-plugin-string": "^3.0.0",
+    "typescript": "^5.7.2"
+  },
+  "peerDependencies": {
+    "@zenfs/core": "^2.3.11 || ^2.5.8"
+  }
+}

@@ -1,0 +1,6 @@
+target
+node_modules
+temp_files
+.env
+*.db3
+*.sqlite

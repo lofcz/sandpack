@@ -1,0 +1,24 @@
+{
+  "name": "sandpack",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Monorepo for the forked Sandpack stack: transpiler, sandpack-client, bundler, and the sandpack-cdn Rust sidecar. One build, one config-driven deploy.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "install:all": "bun install",
+    "build": "bun run build:transpiler && bun run build:client && bun run build:bundler && bun run build:cdn",
+    "build:transpiler": "npm --prefix packages/transpiler run build",
+    "build:client": "npm --prefix packages/sandpack-client run build",
+    "build:bundler": "npm --prefix packages/sandpack-bundler run build",
+    "build:cdn": "node scripts/build-cdn.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "build-and-deploy": "bun run build && bun run deploy",
+    "typecheck": "npm --prefix packages/transpiler run typecheck && npm --prefix packages/sandpack-bundler run typecheck",
+    "test": "npm --prefix packages/sandpack-bundler run test && npm --prefix packages/transpiler run test"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

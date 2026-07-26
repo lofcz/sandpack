@@ -1,0 +1,14 @@
+# Force LF line endings so the golden parity corpus is byte-identical across
+# Windows and Linux checkouts. The transform output embeds the input's line
+# endings; if a Windows checkout feeds CRLF fixtures, the generated goldens
+# carry \r\n and diverge from the Linux CI (LF) run.
+* text=auto eol=lf
+
+# Binaries must never be normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.tgz binary
+*.zip binary

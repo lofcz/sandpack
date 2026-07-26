@@ -1,0 +1,31 @@
+# dependencies
+node_modules
+
+# package build outputs
+dist
+dist-worker
+dist-authoring-worker
+*.tgz
+
+# Rust
+crates/*/target
+**/target
+
+# bundler / build caches
+.parcel-cache
+.parcel-cache-worker
+.parcel-cache-authoring-worker
+.turbo
+
+# test / coverage
+coverage
+
+# logs / OS
+*.log
+.DS_Store
+Thumbs.db
+
+# generated codegen artifacts that must be regenerated, not committed
+packages/sandpack-bundler/static/cached_node_module_requests.tar.gz
+packages/sandpack-bundler/static/immediately-run-sdk
+cargo_check.txt

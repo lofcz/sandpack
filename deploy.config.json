@@ -1,0 +1,22 @@
+{
+  "$schema": "./deploy.config.schema.json",
+  "//": "Artifact → destination mapping for `bun run deploy`. No repo paths are hardcoded: each target is built from a named root you pass at deploy time (e.g. --wwwroot / --tools / --content-root) or set via env. A target copies `from` (a build artifact, relative to the monorepo) into `<root>/<into>`. Enable/disable per target with `enabled`.",
+  "targets": [
+    {
+      "name": "bundler",
+      "from": "packages/sandpack-bundler/dist",
+      "into": "sandpack-bundler",
+      "root": "wwwroot",
+      "enabled": true,
+      "comment": "Parcel bundler output → static files served at /sandpack-bundler/ (index.html no-cache, hashed chunks immutable)."
+    },
+    {
+      "name": "cdn",
+      "from": "crates/sandpack-cdn/target/release/{binary}",
+      "into": "SandpackCdn",
+      "root": "tools",
+      "enabled": true,
+      "comment": "Rust sidecar binary (sandpack-cdn[.exe]) → the host's Tools dir; spawned as a reverse-proxied process at /sandpack-cdn/."
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+[package]
+name = "sandpack-cdn"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Lean, portable single-file release: drop symbols and thin-LTO for a smaller
+# binary without a punishing build time (fat LTO roughly doubles it here).
+[profile.release]
+strip = true
+lto = "thin"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+# Keep symbols for this profile even though `release` strips them.
+strip = false
+
+# SWC's vendored `swc_visit::move_map` does `set_len(0)` then `get_unchecked(i)`
+# on still-valid memory. Modern std now emits a (non-unwinding) library-UB
+# precondition check for `get_unchecked` whenever the *dependency* is built with
+# debug-assertions, which aborts the process in debug builds (release disables
+# the check, which is why it only bites locally and never bit the Linux release).
+# Build all dependencies without debug-assertions/overflow-checks so debug builds
+# behave like release; our own crate keeps them on.
+[profile.dev.package."*"]
+debug-assertions = false
+overflow-checks = false
+
+[dependencies]
+thiserror = "2.0"
+flate2 = "1.1"
+tar = "0.4.46"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_bytes = "0.11.19"
+serde_with = "3.21"
+reqwest = { version = "0.13", features = ["json", "brotli", "gzip", "deflate"] }
+reqwest-middleware = "0.5"
+reqwest-retry = "0.9"
+tokio = { version = "1.52", features = ["full"] }
+glob = "0.3.3"
+swc_core = { version = "69", features = [
+    "common",
+    "ecma_ast",
+    "ecma_parser",
+    "ecma_codegen",
+    "ecma_visit",
+    "ecma_utils",
+    "ecma_transforms",
+    "ecma_transforms_module",
+    "ecma_transforms_optimization",
+    # Required for Helpers::new(false) to inline helper bodies. Without this
+    # feature SWC falls through to @swc/helpers imports even when external=false.
+    "ecma_helpers_inline",
+] }
+base64-simd = "0.8"
+node-semver = "2.2"
+parking_lot = "0.12"
+regex = "1.12"
+tracing = "0.1"
+tracing-subscriber = "0.3.23"
+axum = "0.8"
+tower-http = { version = "0.7", features = ["cors", "compression-gzip", "trace"] }
+bytes = "1"
+dotenvy = "0.15.7"
+moka = { version = "0.12", features = ["future"] }
+rmp = "0.8.15"
+rmp-serde = "1.3"
+tracing-tree = "0.4"
+nanoid = "0.5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+lru = "0.18"
+stacker = "0.1"

@@ -1,0 +1,83 @@
+[
+  {
+    "id": "app-tsx",
+    "path": "/app/src/App.tsx",
+    "deps": [
+      "react",
+      "react/jsx-runtime",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "button-jsx",
+    "path": "/app/src/Button.jsx",
+    "deps": [
+      "react/jsx-runtime",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "entry-js-requires",
+    "path": "/app/src/entry.js",
+    "deps": [
+      "./helpers",
+      "./config.json",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "resource-js-using",
+    "path": "/app/src/resource.js",
+    "deps": [
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "helpers-ts-plain",
+    "path": "/app/src/helpers.ts",
+    "deps": []
+  },
+  {
+    "id": "vendor-js-nodemodules",
+    "path": "/node_modules/acme/index.js",
+    "deps": [
+      "./inner"
+    ]
+  },
+  {
+    "id": "post-mdx",
+    "path": "/app/content/post.mdx",
+    "deps": [
+      "@immediately-run/sdk/MDXProvider",
+      "react/jsx-runtime",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "admonition-mdx",
+    "path": "/app/content/admonition.mdx",
+    "deps": [
+      "@immediately-run/sdk/MDXProvider",
+      "react/jsx-runtime",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "wikilink-mdx",
+    "path": "/app/content/wikilink.mdx",
+    "deps": [
+      "@immediately-run/sdk/MDXProvider",
+      "react/jsx-runtime",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  },
+  {
+    "id": "esm-links-mdx",
+    "path": "/app/content/esm-links.mdx",
+    "deps": [
+      "@immediately-run/sdk/MDXProvider",
+      "react/jsx-runtime",
+      "/node_modules/__csb_bust/refresh-helper.js"
+    ]
+  }
+]

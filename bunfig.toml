@@ -1,0 +1,7 @@
+# Use the classic hoisted node_modules layout (like npm/yarn), NOT bun's
+# isolated `.bun/` store. Parcel (the bundler's build) resolves its plugins via
+# its own package-manager abstraction, which cannot navigate the isolated store
+# and fails with "options.packageManager.resolve is not a function". Hoisted
+# keeps every tool — Parcel, tsup, rollup, jest — working unchanged.
+[install]
+linker = "hoisted"

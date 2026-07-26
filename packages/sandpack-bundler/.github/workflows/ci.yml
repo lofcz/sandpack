@@ -1,0 +1,50 @@
+name: CI
+
+on: [pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup | Install Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Setup | Yarn
+        uses: bahmutov/npm-install@v1
+        
+      - name: Lint | Eslint Check
+        run: yarn lint
+
+      - name: Format | Prettier Check
+        run: yarn format --check
+
+      - name: Test | Verify types
+        run: yarn typecheck
+
+      - name: Test | Jest
+        run: yarn test --forceExit
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup | Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Setup | Yarn Install
+        uses: bahmutov/npm-install@v1
+
+      - name: Build | Build application
+        run: yarn build
+        
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

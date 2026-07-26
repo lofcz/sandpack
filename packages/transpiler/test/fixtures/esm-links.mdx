@@ -1,0 +1,16 @@
+---
+title: ESM in links
+---
+
+# ESM expressions in links
+
+A link whose label is an evaluated expression:
+[{dynamicLinkLabel()}](http://mysite.com)
+
+A markdown link whose destination looks dynamic is NOT evaluated — the brace text is
+literal URL text: [Click here]({dynamicUrl()})
+
+The supported dynamic-URL form is JSX: <a href={dynamicUrl()}>Click here</a>
+
+A dynamic wiki target is not supported — [[{someFilename()}]] is not a wiki-link;
+use JSX <WikiLink target={someFilename()} /> instead.

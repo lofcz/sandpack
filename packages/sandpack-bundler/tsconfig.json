@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "es2020",
+    "target": "esnext",
+    "jsx": "preserve",
+
+    "esModuleInterop": true,
+    "sourceMap": true,
+    "allowJs": true,
+    "lib": ["esnext", "dom"],
+    "rootDir": "src",
+    "moduleResolution": "bundler",
+    "downlevelIteration": true,
+    "strictNullChecks": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "fixture"]
+}
