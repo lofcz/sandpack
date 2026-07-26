@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build (transpiler, client, bundler)
+        run: |
+          bun run build:transpiler
+          bun run build:client
+          bun run build:bundler
+
+      - name: Test
+        run: bun run test
+
+  cdn:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/sandpack-cdn/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/sandpack-cdn/Cargo.lock') }}
+
+      - name: cargo test
+        working-directory: crates/sandpack-cdn
+        run: cargo test --locked

@@ -1,0 +1,102 @@
+name: Release and Publish to npm
+
+# Publishes the monorepo's npm packages (@lofcz/transpiler,
+# @lofcz/sandpack-client) with OIDC trusted publishing + provenance. The Rust
+# crate (crates/sandpack-cdn) is not published here — it deploys as a binary
+# via scripts/deploy.mjs.
+#
+# Trusted publishing is configured per package with `npm trust github` against
+# repo lofcz/sandpack and this workflow file. npm requires the package to
+# already exist on the registry before trust can be created; both already do.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Which package to publish
+        required: true
+        type: choice
+        options:
+          - transpiler
+          - sandpack-client
+      release_type:
+        description: Release type
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+# Map the friendly input to the package's directory + npm name.
+env:
+  PKG_DIR: ${{ github.event.inputs.package == 'transpiler' && 'packages/transpiler' || 'packages/sandpack-client' }}
+  PKG_NAME: ${{ github.event.inputs.package == 'transpiler' && '@lofcz/transpiler' || '@lofcz/sandpack-client' }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # OIDC token for npm trusted publishing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm >= 11.5.1 and < 12: npm 12.0.0's provenance
+      # path throws `Cannot find module 'sigstore'` under `npm publish` (a .0
+      # major regression), and the runner's bundled npm is too old. Pin 11.x.
+      - name: Ensure npm supports OIDC trusted publishing
+        run: npm install -g npm@11
+
+      # Bun workspaces, but install is identical per-package from npm; using npm
+      # here keeps the publish environment plain-node (no bun runtime needed).
+      - name: Install root dependencies (workspace links)
+        run: npm install
+
+      - name: Typecheck
+        working-directory: ${{ env.PKG_DIR }}
+        run: npm run typecheck --if-present
+
+      - name: Test
+        working-directory: ${{ env.PKG_DIR }}
+        run: npm test --if-present
+
+      - name: Bump package version
+        id: version
+        working-directory: ${{ env.PKG_DIR }}
+        run: |
+          npm version "${{ github.event.inputs.release_type }}" --no-git-tag-version
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Commit release version and create tag
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add "${{ env.PKG_DIR }}/package.json"
+          git commit -m "chore(${{ github.event.inputs.package }}): release v${{ steps.version.outputs.version }}"
+          git tag -a "${{ github.event.inputs.package }}-v${{ steps.version.outputs.version }}" -m "Release ${{ env.PKG_NAME }} v${{ steps.version.outputs.version }}"
+
+      # `prepublishOnly` runs build (+ build:worker for the transpiler) so the
+      # published tarball always carries fresh dist/ and worker/ output.
+      - name: Publish to npm
+        working-directory: ${{ env.PKG_DIR }}
+        run: npm publish --provenance --access public
+
+      - name: Push release commit and tag
+        run: git push --follow-tags
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.package }}-v${{ steps.version.outputs.version }}
+          generate_release_notes: true

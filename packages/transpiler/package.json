@@ -5,7 +5,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lofcz/transpiler.git"
+    "url": "git+https://github.com/lofcz/sandpack.git",
+    "directory": "packages/transpiler"
   },
   "type": "module",
   "main": "./dist/index.cjs",

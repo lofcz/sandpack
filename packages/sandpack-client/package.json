@@ -6,10 +6,11 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lofcz/sandpack.git",
-    "directory": "sandpack-client"
+    "directory": "packages/sandpack-client"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "license": "Apache-2.0",
   "author": "CodeSandbox",
@@ -54,7 +55,8 @@
     "build:bundler": "gulp",
     "format": "prettier --write '**/*.{ts,tsx,js,jsx}'",
     "format:check": "prettier --check '**/*.{ts,tsx}'",
-    "dev": "npm run build -- --watch"
+    "dev": "npm run build -- --watch",
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "dist",
