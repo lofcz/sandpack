@@ -48,12 +48,22 @@ pub async fn get_dep_tree_reply(
     Ok(reply)
 }
 
-pub async fn dep_tree_handler(
-    State(state): State<AppState>,
-    Path(path): Path<String>,
-) -> Response {
+pub async fn dep_tree_handler(State(state): State<AppState>, Path(path): Path<String>) -> Response {
     match get_dep_tree_reply(path, state.npm_db, state.pkg_processor).await {
         Ok(reply) => reply.into_response(),
+        Err(err) => ErrorReply::from(err).respond(),
+    }
+}
+
+/// Body transport avoids HTTP proxy limits on encoded path segments. Keep the
+/// same versioned payload and resolve the complete dependency graph in one pass.
+pub async fn dep_tree_post_handler(State(state): State<AppState>, body: String) -> Response {
+    match get_dep_tree_reply(body, state.npm_db, state.pkg_processor).await {
+        Ok(mut reply) => {
+            reply.add_header("Cache-Control", "no-store");
+            reply.add_header("CDN-Cache-Control", "no-store");
+            reply.into_response()
+        }
         Err(err) => ErrorReply::from(err).respond(),
     }
 }

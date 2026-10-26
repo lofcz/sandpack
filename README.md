@@ -57,6 +57,14 @@ Root resolution order: `--<root>=<path>` flag â†’ `SANDPACK_DEPLOY_<ROOT>` env â
 
 ## Inter-package versions
 
+Large CDN payloads use `POST /dep_tree` or `POST /package` with the same
+versioned base64 payload in a `text/plain` body (maximum 64 KiB). Short payloads
+retain the legacy GET routes. Deploy the CDN and enable request-body forwarding
+in the host reverse proxy before updating the bundler. POST replies are not
+cached by URL; the CDN still caches exact package transformations internally.
+This avoids proxy path-segment limits without splitting a dependency graph into
+independently resolved pieces.
+
 - `sandpack-bundler` depends on `@lofcz/transpiler` via `workspace:*`, so the
   toolchain hash it bakes at build time always matches the local transpiler.
 - The CDN protocol version must stay in lockstep across:

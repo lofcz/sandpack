@@ -76,12 +76,22 @@ function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
 }
 
-export async function fetchManifest(deps: DepMap): Promise<IResolvedDependency[]> {
-  const encoded_manifest = encodePayload(JSON.stringify(deps));
-  const result = await retryFetch(urlJoin(cdnRoot(), `/dep_tree/${encoded_manifest}`), {
+/** Keep requests below proxy path-segment limits without splitting dependency resolution. */
+function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
+  const encoded = encodePayload(payload);
+  const segment = encodeURIComponent(encoded);
+  const path = segment.length <= 240 ? `/${endpoint}/${segment}` : `/${endpoint}`;
+  return retryFetch(urlJoin(cdnRoot(), path), {
+    ...(segment.length > 240
+      ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: encoded }
+      : {}),
     maxRetries: 5,
     retryDelay: 1000,
   });
+}
+
+export async function fetchManifest(deps: DepMap): Promise<IResolvedDependency[]> {
+  const result = await fetchPayload('dep_tree', JSON.stringify(deps));
   const buffer = await result.arrayBuffer();
   return decodeMsgPack(buffer) as IResolvedDependency[];
 }
@@ -106,8 +116,7 @@ export interface ICDNModule {
 
 export async function fetchModule(name: string, version: string): Promise<ICDNModule> {
   const specifier = `${name}@${version}`;
-  const encoded_specifier = encodePayload(specifier);
-  const result = await retryFetch(urlJoin(cdnRoot(), `/package/${encoded_specifier}`), { maxRetries: 5 });
+  const result = await fetchPayload('package', specifier);
   const buffer = await result.arrayBuffer();
   return decodeMsgPack(buffer) as ICDNModule;
 }

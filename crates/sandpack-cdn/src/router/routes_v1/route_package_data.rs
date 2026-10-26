@@ -42,3 +42,14 @@ pub async fn package_data_handler(
         Err(err) => ErrorReply::from(err).respond(),
     }
 }
+
+pub async fn package_data_post_handler(State(state): State<AppState>, body: String) -> Response {
+    match get_package_data_reply(body, &state.pkg_processor).await {
+        Ok(mut reply) => {
+            reply.add_header("Cache-Control", "no-store");
+            reply.add_header("CDN-Cache-Control", "no-store");
+            reply.into_response()
+        }
+        Err(err) => ErrorReply::from(err).respond(),
+    }
+}
