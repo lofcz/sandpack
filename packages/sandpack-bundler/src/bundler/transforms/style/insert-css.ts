@@ -1,10 +1,11 @@
-const wrapper = (id: string, css: string, hmrEnabled = false) => `
+const wrapper = (id: string, css: string, hmrEnabled = false, tailwind = false) => `
+${tailwind ? 'require("@tailwindcss/browser");' : ''}
 function createStyleNode(id, content) {
   var styleNode =
     document.getElementById(id) || document.createElement('style');
 
   styleNode.setAttribute('id', id);
-  styleNode.type = 'text/css';
+  styleNode.type = ${JSON.stringify(tailwind ? 'text/tailwindcss' : 'text/css')};
   if (styleNode.styleSheet) {
     styleNode.styleSheet.cssText = content;
   } else {
@@ -22,7 +23,7 @@ createStyleNode(
 ${hmrEnabled ? 'module.hot.accept()' : ''}
 `;
 
-export function insertCss(id: string, css?: string, hmrEnabled?: boolean) {
-  const result = wrapper(id, css || '', hmrEnabled);
+export function insertCss(id: string, css?: string, hmrEnabled?: boolean, tailwind = false) {
+  const result = wrapper(id, css || '', hmrEnabled, tailwind);
   return result;
 }

@@ -65,6 +65,13 @@ cached by URL; the CDN still caches exact package transformations internally.
 This avoids proxy path-segment limits without splitting a dependency graph into
 independently resolved pieces.
 
+Stylesheets with explicit Tailwind compiler directives use the installed
+`@tailwindcss/browser` runtime. The host should include that dependency in the
+initial manifest when accepting such a stylesheet. The bundler preserves
+`@apply`, theme declarations and import options, supplies the runtime from the
+CSS module, and emits `text/tailwindcss` styles that also update under HMR.
+Ordinary stylesheets keep the normal CSS path.
+
 - `sandpack-bundler` depends on `@lofcz/transpiler` via `workspace:*`, so the
   toolchain hash it bakes at build time always matches the local transpiler.
 - The CDN protocol version must stay in lockstep across:
