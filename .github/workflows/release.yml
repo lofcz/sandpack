@@ -58,10 +58,13 @@ jobs:
       - name: Ensure npm supports OIDC trusted publishing
         run: npm install -g npm@11
 
-      # Bun workspaces, but install is identical per-package from npm; using npm
-      # here keeps the publish environment plain-node (no bun runtime needed).
+      # This repository uses workspace:* dependencies, which npm install cannot
+      # resolve. Install with Bun; keep npm for trusted OIDC publishing below.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Install root dependencies (workspace links)
-        run: npm install
+        run: bun install
 
       - name: Typecheck
         working-directory: ${{ env.PKG_DIR }}
