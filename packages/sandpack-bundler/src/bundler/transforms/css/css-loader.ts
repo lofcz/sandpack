@@ -1,4 +1,5 @@
 import initLightningcss, { bundleAsync } from 'lightningcss-wasm';
+import { analyzeCss, type CssAnalysis } from '@lofcz/transpiler/css';
 // Parcel `url:` → fetchable asset URL (string). Do NOT import the .wasm as an
 // ES module: Sandpack's opaque-origin iframe + import maps then hit the host
 // SPA HTML fallback ("MIME type of text/html").
@@ -70,6 +71,7 @@ function toCompilationError(err: unknown, fallbackPath: string): CompilationErro
 export default async function cssLoader(ctx: ITranspilationContext): Promise<ITranspilationResult> {
   const entryPath = ctx.module.filepath;
   const dependencies = new Set<string>();
+  const analyses = new Map<string, CssAnalysis>();
 
   try {
     await ensureLightningcss();
@@ -79,11 +81,11 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
       minify: false,
       resolver: {
         read: async (filePath: string) => {
-          if (filePath === entryPath) {
-            return ctx.code ?? '';
-          }
-          dependencies.add(filePath);
-          return ctx.module.bundler.fs.readFileAsync(filePath);
+          if (filePath !== entryPath) dependencies.add(filePath);
+          const source = filePath === entryPath ? ctx.code ?? '' : await ctx.module.bundler.fs.readFileAsync(filePath);
+          const analysis = analyzeCss(source);
+          analyses.set(filePath, analysis);
+          return analysis.resolverCss;
         },
         resolve: async (specifier: string, originatingFile: string) => {
           if (/^https?:\/\//i.test(specifier) || specifier.startsWith('data:')) {
@@ -105,7 +107,11 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
       },
     });
 
-    const code = new TextDecoder().decode(result.code);
+    let code = new TextDecoder().decode(result.code);
+    for (const analysis of analyses.values()) code = analysis.restoreImports(code);
+    const usesCompiler = [...analyses.values()].some(analysis => analysis.requiresTailwind);
+    const hasFrameworkImport = [...analyses.values()].some(analysis => analysis.tailwindImports.length > 0);
+    if (usesCompiler && !hasFrameworkImport) code = `@import "tailwindcss";\n${code}`;
     return { code, dependencies };
   } catch (err) {
     return toCompilationError(err, entryPath);

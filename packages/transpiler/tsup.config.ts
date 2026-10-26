@@ -1,11 +1,7 @@
 import { defineConfig } from 'tsup';
 
-// Bundle the package into a single entry. Both consumers (the sandbox worker
-// build and the CLI) import the public API from the package root, so unlike the
-// SDK there is no per-file subpath contract to preserve. `@babel/standalone`,
-// the babel plugins and `react-refresh/babel` stay external — they are heavy,
-// versioned exactly (the version IS the toolchain stamp, §4.4), and must resolve
-// to the consumer's installed copy so the produced bytes match.
+// The transform chain stays separate from the lightweight CSS analyzer. Babel
+// and react-refresh remain external so every consumer uses the pinned toolchain.
 export default defineConfig({
   // `src/index.ts` is the package root both the CLI and the sandbox iframe consume.
   // `src/babel/worker-api.ts` (→ `dist/babel/worker-api.js`) is the narrow
@@ -14,7 +10,8 @@ export default defineConfig({
   // `splitting: false` keeps each entry a self-contained bundle, so adding the
   // second entry leaves `dist/index.js` AND `dist/index.cjs` byte-identical (the
   // PRETRANSPILED §4.4 contract, verified) instead of hoisting shared code into a chunk.
-  entry: ['src/index.ts', 'src/babel/worker-api.ts'],
+  // The CSS entry is shared with authoring without loading Babel or MDX.
+  entry: ['src/index.ts', 'src/babel/worker-api.ts', 'src/css.ts'],
   format: ['esm', 'cjs'],
   splitting: false,
   dts: true,
