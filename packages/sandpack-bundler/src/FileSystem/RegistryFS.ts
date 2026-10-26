@@ -1,4 +1,4 @@
-import { FileSystem, type CreationOptions, type InodeLike } from '@zenfs/core';
+import { FileSystem, Inode, type CreationOptions, type InodeLike } from '@zenfs/core';
 import { withErrno } from 'kerium';
 
 import { ModuleRegistry } from '../bundler/module-registry';
@@ -91,7 +91,10 @@ export class RegistryFS extends FileSystem {
 
   private makeInode(path: string, mode: number, size: number): InodeLike {
     const now = Date.now();
-    return {
+    // CopyOnWrite can copy this metadata into its writable layer even when a
+    // read only updates atime. A complete inode supplies extended attributes;
+    // plain metadata left them undefined and made closing a package read throw.
+    return new Inode({
       ino: this.ino(path),
       size,
       mode,
@@ -102,7 +105,7 @@ export class RegistryFS extends FileSystem {
       mtimeMs: now,
       ctimeMs: now,
       birthtimeMs: now,
-    };
+    });
   }
 
   // --- registry-backed classification (no fetch) --------------------------
