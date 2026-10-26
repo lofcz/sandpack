@@ -7,7 +7,7 @@
  * runtime compares it (plus `toolchainHash`) against `index.json`'s
  * `toolchain.version` and ignores all artifacts on mismatch.
  */
-export const TRANSPILER_VERSION = '0.8.1';
+export const TRANSPILER_VERSION = '0.8.2';
 
 /**
  * The preset whose chain this package replicates. Part of the stamp: a v1

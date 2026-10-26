@@ -1,6 +1,6 @@
 {
   "name": "@lofcz/transpiler",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "The single source of truth for immediately.run's per-file transform chain (MDX + Babel + react-refresh), shared byte-for-byte between the browser sandbox bundler and the CLI's pre-transpiled-artifact emitter.",
   "license": "MIT",
   "repository": {

@@ -5,9 +5,10 @@ name: Release and Publish to npm
 # crate (crates/sandpack-cdn) is not published here — it deploys as a binary
 # via scripts/deploy.mjs.
 #
-# Trusted publishing is configured per package with `npm trust github` against
-# repo lofcz/sandpack and this workflow file. npm requires the package to
-# already exist on the registry before trust can be created; both already do.
+# Trusted publishing is bound to a package's registered repository/workflow.
+# @lofcz/transpiler currently publishes from lofcz/transpiler's release.yml;
+# release it there and synchronize this workspace copy. Publishing it from this
+# workflow requires explicitly changing its npm trusted-publisher registration.
 
 on:
   workflow_dispatch:
