@@ -78,7 +78,7 @@ jobs:
         id: version
         working-directory: ${{ env.PKG_DIR }}
         run: |
-          npm version "${{ github.event.inputs.release_type }}" --no-git-tag-version
+          npm version "${{ github.event.inputs.release_type }}" --no-git-tag-version --workspaces=false --package-lock=false
           echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Commit release version and create tag
@@ -93,7 +93,7 @@ jobs:
       # published tarball always carries fresh dist/ and worker/ output.
       - name: Publish to npm
         working-directory: ${{ env.PKG_DIR }}
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --workspaces=false
 
       - name: Push release commit and tag
         run: git push --follow-tags
