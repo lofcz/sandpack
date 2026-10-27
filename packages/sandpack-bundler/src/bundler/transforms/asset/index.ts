@@ -11,6 +11,19 @@ const MIME_TYPES: Record<string, string> = {
   bmp: 'image/bmp',
   ico: 'image/x-icon',
   svg: 'image/svg+xml',
+  mp3: 'audio/mpeg',
+  mpeg: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  woff: 'font/woff',
+  woff2: 'font/woff2',
+  ttf: 'font/ttf',
+  otf: 'font/otf',
 };
 
 export const ASSET_EXTENSIONS = Object.keys(MIME_TYPES);
@@ -31,7 +44,7 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
 };
 
 /**
- * Turns imported binary assets (images) into JS modules that export a base64
+ * Turns imported binary assets (images, audio, video, fonts) into JS modules that export a base64
  * data URL, e.g. `import logo from './logo.png'` yields the URL string.
  *
  * The module source handed to transformers is read as UTF-8, which mangles
