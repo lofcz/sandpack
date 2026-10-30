@@ -199,7 +199,7 @@ async function retryFetchUncached(input: RequestInfo, init: RequestInitWithRetry
       throw new FetchError(result, text);
     }
   } catch (err) {
-    if (!shouldRetry) {
+    if (!shouldRetry || (err instanceof FetchError && !isRetryableStatus(err.status))) {
       throw err;
     }
   }

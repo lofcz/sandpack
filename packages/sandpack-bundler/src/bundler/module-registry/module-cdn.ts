@@ -3,6 +3,7 @@ import urlJoin from 'url-join';
 
 import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
 import { DepMap } from '.';
+import { FetchError } from '../../errors/FetchError';
 
 // Package CDN root — self-hosted only (Priprava `/sandpack-cdn/`). Never a
 // public third-party CDN. Resolution order:
@@ -77,17 +78,35 @@ function encodePayload(payload: string): string {
 }
 
 /** Keep requests below proxy path-segment limits without splitting dependency resolution. */
-function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
+async function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
   const encoded = encodePayload(payload);
   const segment = encodeURIComponent(encoded);
   const path = segment.length <= 240 ? `/${endpoint}/${segment}` : `/${endpoint}`;
-  return retryFetch(urlJoin(cdnRoot(), path), {
+  try {
+    return await retryFetch(urlJoin(cdnRoot(), path), {
     ...(segment.length > 240
       ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: encoded }
       : {}),
     maxRetries: 5,
     retryDelay: 1000,
-  });
+    });
+  } catch (error) {
+    // A rolling deployment can serve the new bundler before the CDN has the
+    // body routes. Preserve the whole dependency graph when using the legacy
+    // transport; splitting it can silently change peer dependency resolution.
+    if (segment.length > 240 && error instanceof FetchError && [404, 405].includes(error.status)) {
+      try {
+        return await retryFetch(urlJoin(cdnRoot(), `/${endpoint}/${segment}`));
+      } catch {
+        throw new Error(
+          `Package service transport unavailable (${endpoint}): POST is unsupported and the legacy URL failed. ` +
+          'The host must update the package service/proxy together with the bundler. ' +
+          'Keep the saved source and dependencies; rewriting the material will not repair this service failure.',
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 export async function fetchManifest(deps: DepMap): Promise<IResolvedDependency[]> {
