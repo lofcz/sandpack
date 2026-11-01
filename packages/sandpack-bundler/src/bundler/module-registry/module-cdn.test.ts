@@ -67,3 +67,12 @@ it('does not reinterpret package resolution failures as missing transport routes
   await expect(fetchManifest({ ['a'.repeat(200)]: '1.0.0' })).rejects.toBe(error);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+
+it('reports a version the service could not resolve instead of blaming the transport', async () => {
+  const { FetchError } = await import('../../errors/FetchError');
+  const body = JSON.stringify({ status: 404, message: 'Package version not found react@99.0.0', details: 'PackageVersionNotFound' });
+  const error = new FetchError({ status: 404, statusText: 'Not Found', url: 'https://preview.example/sandpack-cdn/dep_tree' } as Response, body);
+  fetchMock.mockRejectedValue(error);
+  await expect(fetchManifest({ ['a'.repeat(200)]: '1.0.0' })).rejects.toBe(error);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

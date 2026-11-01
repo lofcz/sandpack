@@ -23,7 +23,11 @@ pub enum VersionRange {
 
 #[derive(Clone, Debug)]
 pub struct DependencyRequest {
+    /// Install name: the `node_modules` directory and the `require()` name.
     name: String,
+    /// npm package the files come from; differs from `name` for an
+    /// `npm:<package>@<range>` alias.
+    source: String,
     version_range: VersionRange,
     /// Original range/tag string, kept for accurate PackageVersionNotFound messages.
     range_str: String,
@@ -32,14 +36,20 @@ pub struct DependencyRequest {
 
 impl DependencyRequest {
     pub fn new(name: &str, version_range_str: &str, depth: u32) -> Result<Self, ServerError> {
-        // TODO: Handle aliases, "react": "npm:preact@^7.0.0"
-        let version_range = match Range::parse(version_range_str) {
+        let (source, range) = match version_range_str.trim().strip_prefix("npm:") {
+            Some(target) => parse_npm_alias(target).ok_or_else(|| {
+                ServerError::PackageVersionNotFound(name.to_string(), version_range_str.to_string())
+            })?,
+            None => (name.to_string(), version_range_str),
+        };
+        let version_range = match Range::parse(range) {
             Ok(req) => VersionRange::Range(req),
-            Err(_) => VersionRange::Alias(String::from(version_range_str)),
+            Err(_) => VersionRange::Alias(String::from(range)),
         };
 
         Ok(DependencyRequest {
             name: String::from(name),
+            source,
             version_range,
             range_str: String::from(version_range_str),
             depth,
@@ -76,6 +86,17 @@ impl DependencyRequest {
     }
 }
 
+/// `<package>[@<range>]` after `npm:`. The version separator is the last `@`
+/// past a scope's leading one; a bare package means its `latest` tag.
+fn parse_npm_alias(target: &str) -> Option<(String, &str)> {
+    let (package, range) = match target.rfind('@') {
+        Some(at) if at > 0 => (&target[..at], &target[at + 1..]),
+        _ => (target, "latest"),
+    };
+    let range = if range.trim().is_empty() { "latest" } else { range };
+    super::npm_specifier::is_valid_package_name(package).then(|| (package.to_string(), range))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dependency {
     #[serde(rename = "n")]
@@ -84,14 +105,20 @@ pub struct Dependency {
     version: String,
     #[serde(rename = "d")]
     depth: u32,
+    /// npm package the files come from, present only for an alias (`n` is
+    /// then the install name). Older bundlers ignore it.
+    #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 impl Dependency {
-    pub fn new(name: String, version: String, depth: u32) -> Self {
+    pub fn new(name: String, version: String, depth: u32, source: String) -> Self {
+        let source = (source != name).then_some(source);
         Dependency {
             name,
             version,
             depth,
+            source,
         }
     }
 }
@@ -129,8 +156,8 @@ async fn resolve_dep(
     npm_db: &NpmDatabase,
     pkg_processor: &CachedPackageProcessor,
 ) -> ResolveDepResult {
-    npm_db.ensure_package(&req.name).await?;
-    let manifest = npm_db.get_package(&req.name)?;
+    npm_db.ensure_package(&req.source).await?;
+    let manifest = npm_db.get_package(&req.source)?;
     let Some(resolved_version) = req.resolve_version(&manifest) else {
         return Err(ServerError::PackageVersionNotFound(
             req.name,
@@ -139,7 +166,7 @@ async fn resolve_dep(
     };
 
     let dependencies = pkg_processor
-        .get(req.name.as_str(), resolved_version.as_str())
+        .get(req.source.as_str(), resolved_version.as_str())
         .await?;
     let mut transient_deps: Vec<DependencyRequest> = Vec::with_capacity(dependencies.1.len());
     for (dep_name, dep_meta) in dependencies.1.iter() {
@@ -156,7 +183,7 @@ async fn resolve_dep(
     }
 
     Ok((
-        Dependency::new(req.name, resolved_version, req.depth),
+        Dependency::new(req.name, resolved_version, req.depth, req.source),
         transient_deps,
     ))
 }
@@ -381,6 +408,44 @@ mod tests {
         let pkg = pkg_with_versions("@mui/material", &["9.1.2"]);
         let req = DependencyRequest::new("@mui/material", "9.1.2", 0).unwrap();
         assert_eq!(req.resolve_version(&pkg).as_deref(), Some("9.1.2"));
+    }
+
+    #[test]
+    fn npm_alias_resolves_against_its_target_package() {
+        let pkg = pkg_with_versions("string-width", &["4.2.3", "5.1.2"]);
+        let req = DependencyRequest::new("string-width-cjs", "npm:string-width@^4.2.0", 1).unwrap();
+        assert_eq!(req.name, "string-width-cjs");
+        assert_eq!(req.source, "string-width");
+        assert_eq!(req.resolve_version(&pkg).as_deref(), Some("4.2.3"));
+    }
+
+    #[test]
+    fn npm_alias_accepts_scoped_targets_and_tags() {
+        let scoped = DependencyRequest::new("ui", "npm:@scope/ui@2.x", 0).unwrap();
+        assert_eq!(scoped.source, "@scope/ui");
+        let mut pkg = pkg_with_versions("@scope/ui", &["2.1.0", "3.0.0"]);
+        assert_eq!(scoped.resolve_version(&pkg).as_deref(), Some("2.1.0"));
+        pkg.dist_tags.insert("latest".to_string(), "3.0.0".to_string());
+        for spec in ["npm:@scope/ui", "npm:@scope/ui@", "npm:@scope/ui@latest"] {
+            let req = DependencyRequest::new("ui", spec, 0).unwrap();
+            assert_eq!(req.source, "@scope/ui");
+            assert_eq!(req.resolve_version(&pkg).as_deref(), Some("3.0.0"));
+        }
+    }
+
+    #[test]
+    fn npm_alias_rejects_non_package_targets() {
+        for spec in ["npm:", "npm:@", "npm:../x@1", "npm:https://x.test/a@1", "npm:a/b@1"] {
+            assert!(DependencyRequest::new("x", spec, 0).is_err(), "{spec}");
+        }
+    }
+
+    #[test]
+    fn dependency_names_its_source_only_for_aliases() {
+        let plain = serde_json::to_value(Dependency::new("react".into(), "19.0.0".into(), 0, "react".into())).unwrap();
+        assert_eq!(plain, serde_json::json!({ "n": "react", "v": "19.0.0", "d": 0 }));
+        let alias = serde_json::to_value(Dependency::new("react".into(), "10.26.0".into(), 0, "preact".into())).unwrap();
+        assert_eq!(alias, serde_json::json!({ "n": "react", "v": "10.26.0", "d": 0, "s": "preact" }));
     }
 
     #[test]

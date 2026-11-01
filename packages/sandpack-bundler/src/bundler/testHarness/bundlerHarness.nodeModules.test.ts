@@ -31,7 +31,7 @@ describe('G0-4 [harness] /node_modules + /transpiled mount routing', () => {
           'big.js': 12345, // listed-but-not-inlined → lazy fetch
         },
         [],
-        true,
+        { name: 'leftpad', version: '1.0.0' },
       ),
     );
     h.resetSpies();

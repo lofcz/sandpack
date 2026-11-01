@@ -18,7 +18,8 @@ import {
   EsmFallbackFetcher,
   esmFallbackEntryUrl,
   esmFallbackModulePath,
-  fetchEsmFallbackSource,
+  fetchEsmFallback,
+  fetchEsmFallbackRelease,
   nativeEsmFallbackFetcher,
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
@@ -181,7 +182,7 @@ export class ModuleRegistry {
   async preloadModules(): Promise<void> {
     await Promise.all(
       this.manifest.map((dep) => {
-        return this.fetchNodeModule(dep.n, dep.v);
+        return this.fetchNodeModule(dep.n, dep.v, dep.s);
       })
     );
     // Close over CDN-reported used modules (`ICDNModule.m`) that `/dep_tree`
@@ -228,18 +229,19 @@ export class ModuleRegistry {
           this.manifest.push(dep);
         }
       }
-      await Promise.all(extra.map((dep) => this.fetchNodeModule(dep.n, dep.v)));
+      await Promise.all(extra.map((dep) => this.fetchNodeModule(dep.n, dep.v, dep.s)));
     }
   }
 
-  private async _fetchModule(name: string, version: string): Promise<NodeModule> {
+  private async _fetchModule(name: string, version: string, source: string): Promise<NodeModule> {
     const fallbackRange = this.esmFallbacks.get(name);
     if (fallbackRange !== undefined) {
       return this._fetchEsmFallbackModule(name, fallbackRange);
     }
     // Prefer the zip-bundled content (R3-49a); fall back to the live CDN fetch.
-    const module = (await this._fetchBundledModule(name, version)) ?? (await fetchModule(name, version));
-    const processedNodeModule = new NodeModule(name, version, module.f, module.m, true);
+    // An `npm:` alias installs `source`'s files under `name`.
+    const module = (await this._fetchBundledModule(source, version)) ?? (await fetchModule(source, version));
+    const processedNodeModule = new NodeModule(name, version, module.f, module.m, { name: source, version });
     this.modules.set(name, processedNodeModule);
     logger.debug('fetched module', name, version, module);
     return processedNodeModule;
@@ -258,8 +260,9 @@ export class ModuleRegistry {
     const entryUrl = esmFallbackEntryUrl(name, range, externals);
 
     let source: string;
+    let moduleUrl: string;
     try {
-      source = await fetchEsmFallbackSource(entryUrl, this.esmFallbackFetcher!);
+      ({ source, moduleUrl } = await fetchEsmFallback(entryUrl, this.esmFallbackFetcher!));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -276,14 +279,19 @@ export class ModuleRegistry {
       );
     }
 
-    const module = synthesizeEsmFallbackModule(name, range, transformed.code, transformed.deps);
-    const processedNodeModule = new NodeModule(name, range, module.f, module.m, false);
+    // The release esm.sh built supplies the package's assets and their URLs;
+    // without it the fallback is code-only, as before.
+    // Only a followed build path names a release; the entry URL holds the range.
+    const release = moduleUrl === entryUrl ? null : await fetchEsmFallbackRelease(name, moduleUrl, this.esmFallbackFetcher!);
+    if (!release) logger.warn(`esm.sh fallback "${name}@${range}": release unknown, package assets unavailable`);
+    const module = synthesizeEsmFallbackModule(name, range, transformed.code, transformed.deps, release);
+    const processedNodeModule = new NodeModule(name, range, module.f, module.m, release?.release ?? null);
     this.modules.set(name, processedNodeModule);
     logger.debug('resolved module via esm.sh fallback (shared-React transpile)', name, range, entryUrl);
     return processedNodeModule;
   }
 
-  async fetchNodeModule(name: string, version: string): Promise<NodeModule> {
+  async fetchNodeModule(name: string, version: string, source = name): Promise<NodeModule> {
     // Module already found, skip fetching
     // This could also check version, but for now this is fine
     // as we don't allow multiple versions of the same module right now
@@ -292,10 +300,10 @@ export class ModuleRegistry {
       return foundModule;
     }
 
-    const cacheKey = `${name}::${version}`;
+    const cacheKey = `${name}::${source}::${version}`;
     let promise = this.moduleDownloadPromises.get(cacheKey);
     if (!promise) {
-      promise = this._fetchModule(name, version).finally(() => this.moduleDownloadPromises.delete(cacheKey));
+      promise = this._fetchModule(name, version, source).finally(() => this.moduleDownloadPromises.delete(cacheKey));
       this.moduleDownloadPromises.set(cacheKey, promise);
     }
     return promise;

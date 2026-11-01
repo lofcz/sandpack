@@ -12,7 +12,7 @@ it('reads and resolves packages through the runtime copy-on-write mount', async 
   const registry = { modules: new Map([
     ['widget', new NodeModule('widget', '1.0.0', {
       'package.json': inline(pkg), 'index.js': inline('module.exports = 42;'),
-    }, [], true)],
+    }, [], { name: 'widget', version: '1.0.0' })],
   ]) } as unknown as ModuleRegistry;
   const readable = new RegistryFS(registry);
   const backend = await resolveMountConfig({ backend: CopyOnWrite, readable, writable: { backend: InMemory } });

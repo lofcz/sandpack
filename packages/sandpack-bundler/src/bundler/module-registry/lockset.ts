@@ -30,7 +30,7 @@ const isDepMap = (value: unknown): value is DepMap =>
 const isResolvedDependency = (value: unknown): value is IResolvedDependency => {
   if (!value || typeof value !== 'object') return false;
   const d = value as Partial<IResolvedDependency>;
-  return typeof d.n === 'string' && typeof d.v === 'string' && typeof d.d === 'number';
+  return typeof d.n === 'string' && typeof d.v === 'string' && typeof d.d === 'number' && (d.s === undefined || typeof d.s === 'string');
 };
 
 /**

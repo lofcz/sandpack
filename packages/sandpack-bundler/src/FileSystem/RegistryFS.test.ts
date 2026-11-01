@@ -25,9 +25,9 @@ function fixture(): { registry: ModuleRegistry; fetcher: jest.Mock } {
       'cjs/react.production.js': 1234, // listed-but-not-inlined → lazy fetch
     },
     [],
-    true,
+    { name: 'react', version: '18.3.1' },
   );
-  const babelRuntime = new NodeModule('@babel/runtime', '7.24.0', { 'helpers/esm/x.js': inlined('export const x = 1;') }, [], true);
+  const babelRuntime = new NodeModule('@babel/runtime', '7.24.0', { 'helpers/esm/x.js': inlined('export const x = 1;') }, [], { name: '@babel/runtime', version: '7.24.0' });
   const fetcher = jest.fn<Promise<string>, [string, string, string]>(async () => 'FETCHED CONTENT');
   return { registry: stubRegistry([react, babelRuntime]), fetcher: fetcher as jest.Mock };
 }
@@ -121,7 +121,7 @@ describe('RegistryFS (direct backend)', () => {
       const { registry, fetcher } = fixture();
       const regfs = new RegistryFS(registry, fetcher as unknown as RegistryFileFetcher);
       expect((await regfs.readdir('/')).includes('lodash')).toBe(false);
-      registry.modules.set('lodash', new NodeModule('lodash', '4.17.21', { 'index.js': inlined('') }, [], true));
+      registry.modules.set('lodash', new NodeModule('lodash', '4.17.21', { 'index.js': inlined('') }, [], { name: 'lodash', version: '4.17.21' }));
       expect((await regfs.readdir('/')).includes('lodash')).toBe(true);
     });
   });

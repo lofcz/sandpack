@@ -67,6 +67,8 @@ export interface IResolvedDependency {
   v: string;
   // depth
   d: number;
+  // npm package the files come from, only for an `npm:` alias (`n` is then the install name)
+  s?: string;
 }
 
 // Exported so the lockset check (lockset.ts) can reject locksets resolved
@@ -75,6 +77,17 @@ export const CDN_VERSION = 5;
 
 function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
+}
+
+/** The package service's own error reply (`{ status, message }`), as opposed to a
+ *  proxy or older service that has no such route. */
+function answeredByService(error: FetchError): boolean {
+  try {
+    const body = JSON.parse(error.text);
+    return body?.status === error.status && typeof body.message === 'string';
+  } catch {
+    return false;
+  }
 }
 
 /** Keep requests below proxy path-segment limits without splitting dependency resolution. */
@@ -94,7 +107,8 @@ async function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
     // A rolling deployment can serve the new bundler before the CDN has the
     // body routes. Preserve the whole dependency graph when using the legacy
     // transport; splitting it can silently change peer dependency resolution.
-    if (segment.length > 240 && error instanceof FetchError && [404, 405].includes(error.status)) {
+    // A 404 can also mean "version not found"; only a missing route warrants the legacy URL.
+    if (segment.length > 240 && error instanceof FetchError && [404, 405].includes(error.status) && !answeredByService(error)) {
       try {
         return await retryFetch(urlJoin(cdnRoot(), `/${endpoint}/${segment}`));
       } catch {

@@ -8,7 +8,7 @@ import type { NodeModule } from '../../module-registry/NodeModule';
 const NODE_MODULES = '/node_modules/';
 
 interface PackageVersions {
-  modules: ReadonlyMap<string, Pick<NodeModule, 'version' | 'pinned'>>;
+  modules: ReadonlyMap<string, Pick<NodeModule, 'release'>>;
 }
 
 export interface PackageCssBase {
@@ -21,8 +21,8 @@ export interface PackageCssBase {
 /**
  * Package CSS is injected as a <style> into the preview document, so a relative
  * `url()` resolves against the bundler page, not the package. Locate the
- * stylesheet's directory on the raw npm file origin, at the version the registry
- * pinned, or return null for app files and unpinned (esm.sh fallback) modules.
+ * stylesheet's directory on the raw npm file origin, at the release the registry
+ * resolved, or return null for app files and modules without a known release.
  */
 export function packageCssBase(filePath: string, registry: PackageVersions | undefined): PackageCssBase | null {
   const at = filePath.lastIndexOf(NODE_MODULES);
@@ -31,13 +31,12 @@ export function packageCssBase(filePath: string, registry: PackageVersions | und
   const nameLength = segments[0].startsWith('@') ? 2 : 1;
   if (segments.length <= nameLength) return null;
   const name = segments.slice(0, nameLength).join('/');
-  // Only a pinned module's files live at `name@version`; an esm.sh range would
-  // let the asset drift from the stylesheet.
-  const module = registry?.modules.get(name);
-  if (!module?.pinned) return null;
-  const version = module.version;
+  // Only a known release's files live at `name@version` (an alias's target);
+  // a range would let the asset drift from the stylesheet.
+  const release = registry?.modules.get(name)?.release;
+  if (!release) return null;
   const dir = segments.slice(nameLength, -1).map((segment) => `${encodeURIComponent(segment)}/`).join('');
-  const root = npmFileUrl(name, version, '');
+  const root = npmFileUrl(release.name, release.version, '');
   return { root, base: root + dir };
 }
 

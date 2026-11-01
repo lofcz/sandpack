@@ -156,6 +156,7 @@ export class RegistryFS extends FileSystem {
     if (module === undefined || file == null) {
       throw withErrno('ENOENT');
     }
+    const release = module.release;
 
     // Inlined content (`{ c, d, t }`); a number means listed-but-not-inlined.
     if (typeof file === 'object') {
@@ -165,7 +166,9 @@ export class RegistryFS extends FileSystem {
 
     let promise = this.inflight.get(path);
     if (!promise) {
-      promise = this.fetchFile(moduleName!, module.version, relPath)
+      // Listed files are fetched from the release they belong to (an alias's target).
+      if (!release) throw withErrno('ENOENT');
+      promise = this.fetchFile(release.name, release.version, relPath)
         .then((content) => {
           this.contentCache.set(path, content);
           return content;

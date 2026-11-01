@@ -11,11 +11,13 @@ import { ITranspilationContext } from '../Transformer';
 
 const registry = {
   modules: new Map([
-    ['@fontsource/unifrakturmaguntia', { version: '5.2.8', pinned: true }],
-    ['katex', { version: '0.16.22', pinned: true }],
-    // esm.sh fallback: the registry holds the requested range, not a release.
-    ['ranged', { version: '^1.0.0', pinned: false }],
-    ['prerelease', { version: '19.0.0-rc.1+build.5', pinned: true }],
+    ['@fontsource/unifrakturmaguntia', { release: { name: '@fontsource/unifrakturmaguntia', version: '5.2.8' } }],
+    ['katex', { release: { name: 'katex', version: '0.16.22' } }],
+    // esm.sh fallback whose release could not be determined.
+    ['ranged', { release: null }],
+    ['prerelease', { release: { name: 'prerelease', version: '19.0.0-rc.1+build.5' } }],
+    // `"aliased": "npm:@scope/real@2.0.0"`: files live under the target package.
+    ['aliased', { release: { name: '@scope/real', version: '2.0.0' } }],
   ]),
 };
 
@@ -86,13 +88,17 @@ it('only rebases relative references that stay inside a pinned package', () => {
   expect(packageCssBase('/node_modules/ranged/a.css', registry)).toBeNull();
   expect(packageCssBase('/node_modules/katex/a #b?/c.css', registry)?.base).toBe('https://unpkg.com/katex@0.16.22/a%20%23b%3F/');
   expect(packageCssBase('/node_modules/katex/a.css', undefined)).toBeNull();
+  expect(packageCssBase('/node_modules/aliased/dist/a.css', registry)).toEqual({
+    root: 'https://unpkg.com/@scope/real@2.0.0/',
+    base: 'https://unpkg.com/@scope/real@2.0.0/dist/',
+  });
   expect(packageCssBase('/node_modules/prerelease/a.css', registry)?.root).toBe('https://unpkg.com/prerelease@19.0.0-rc.1+build.5/');
   expect(packageCssBase('/node_modules/missing/a.css', registry)).toBeNull();
 });
 
 it('edits only reference tokens and keeps every other source byte', () => {
   const base = packageCssBase('/node_modules/@scope/kit/dist/css/kit.css', {
-    modules: new Map([['@scope/kit', { version: '2.1.0', pinned: true }]]),
+    modules: new Map([['@scope/kit', { release: { name: '@scope/kit', version: '2.1.0' } }]]),
   })!;
   const lines = (urls: string[]) => [
     '/* Žluťoučký kůň url(./comment.png) */\r',
