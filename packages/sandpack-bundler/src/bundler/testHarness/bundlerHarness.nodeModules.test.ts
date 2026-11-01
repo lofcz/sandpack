@@ -31,6 +31,7 @@ describe('G0-4 [harness] /node_modules + /transpiled mount routing', () => {
           'big.js': 12345, // listed-but-not-inlined → lazy fetch
         },
         [],
+        true,
       ),
     );
     h.resetSpies();

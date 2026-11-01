@@ -30,7 +30,7 @@ function makeRegistry(pkgs: Record<string, FileSpec>): {
         absFiles.set(`/node_modules/${pkg}/${rel}`, content);
       }
     }
-    registry.set(pkg, new NodeModule(pkg, '1.0.0', fileMap, []));
+    registry.set(pkg, new NodeModule(pkg, '1.0.0', fileMap, [], true));
   }
   const isFile = gensync({ sync: (p: string) => absFiles.has(p) });
   const readFile = gensync({

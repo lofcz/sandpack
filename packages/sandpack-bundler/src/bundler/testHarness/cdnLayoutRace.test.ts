@@ -26,7 +26,7 @@ describe('R3-49d CDN-layout fast path — concurrent resolution does not spuriou
       // modules/mN.js are leaf files reachable as bare subpaths
       files[`modules/m${i}.js`] = { c: `module.exports = ${i};`, d: [], t: false };
     }
-    h.bundler.moduleRegistry.modules.set('corish', new NodeModule('corish', '1.0.0', files, []));
+    h.bundler.moduleRegistry.modules.set('corish', new NodeModule('corish', '1.0.0', files, [], true));
   }
 
   beforeEach(async () => {

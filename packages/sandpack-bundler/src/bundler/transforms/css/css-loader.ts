@@ -11,6 +11,7 @@ import { extractModuleSpecifierParts, isModuleSpecifier } from '../../../resolve
 import { dirname, join as joinPaths } from '../../../utils/path';
 import { ITranspilationContext, ITranspilationResult } from '../Transformer';
 import { shapeCssEngineError } from './css-error';
+import { packageCssBase, rebasePackageCssUrls } from './package-urls';
 
 let initPromise: Promise<void> | null = null;
 
@@ -82,7 +83,10 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
       resolver: {
         read: async (filePath: string) => {
           if (filePath !== entryPath) dependencies.add(filePath);
-          const source = filePath === entryPath ? ctx.code ?? '' : await ctx.module.bundler.fs.readFileAsync(filePath);
+          let source = filePath === entryPath ? ctx.code ?? '' : await ctx.module.bundler.fs.readFileAsync(filePath);
+          // Each file's url()s are relative to that file; bundling keeps them verbatim.
+          const packageBase = packageCssBase(filePath, ctx.module.bundler.moduleRegistry);
+          if (packageBase) source = rebasePackageCssUrls(source, packageBase);
           const analysis = analyzeCss(source);
           analyses.set(filePath, analysis);
           return analysis.resolverCss;

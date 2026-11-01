@@ -239,7 +239,7 @@ export class ModuleRegistry {
     }
     // Prefer the zip-bundled content (R3-49a); fall back to the live CDN fetch.
     const module = (await this._fetchBundledModule(name, version)) ?? (await fetchModule(name, version));
-    const processedNodeModule = new NodeModule(name, version, module.f, module.m);
+    const processedNodeModule = new NodeModule(name, version, module.f, module.m, true);
     this.modules.set(name, processedNodeModule);
     logger.debug('fetched module', name, version, module);
     return processedNodeModule;
@@ -277,7 +277,7 @@ export class ModuleRegistry {
     }
 
     const module = synthesizeEsmFallbackModule(name, range, transformed.code, transformed.deps);
-    const processedNodeModule = new NodeModule(name, range, module.f, module.m);
+    const processedNodeModule = new NodeModule(name, range, module.f, module.m, false);
     this.modules.set(name, processedNodeModule);
     logger.debug('resolved module via esm.sh fallback (shared-React transpile)', name, range, entryUrl);
     return processedNodeModule;
