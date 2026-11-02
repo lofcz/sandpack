@@ -79,12 +79,21 @@ function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
 }
 
-/** The package service's own error reply (`{ status, message }`), as opposed to a
- *  proxy or older service that has no such route. */
+/** `details` of the package service's not-found errors: the `ServerError` variant. */
+const PACKAGE_NOT_FOUND_ERRORS = ['PackageNotFound', 'PackageVersionNotFound', 'NpmManifestDownloadError'];
+
+/** The package service resolved the request and reported a missing package or version
+ *  (`{ status, message, details }`), as opposed to a proxy, or an older service whose
+ *  router has no such route and answers `{ details: "Not found" }` (prod 2026-11-01). */
 function answeredByService(error: FetchError): boolean {
   try {
     const body = JSON.parse(error.text);
-    return body?.status === error.status && typeof body.message === 'string';
+    return (
+      body?.status === error.status &&
+      typeof body.message === 'string' &&
+      typeof body.details === 'string' &&
+      PACKAGE_NOT_FOUND_ERRORS.some((variant) => body.details.startsWith(variant))
+    );
   } catch {
     return false;
   }

@@ -53,6 +53,19 @@ it('falls back as one graph when an older service lacks the POST route', async (
   expect(atob(decodeURIComponent(url.split('/').pop()))).toBe(`5(${JSON.stringify(deps)})`);
 });
 
+it('falls back when an older service router answers the unknown POST route', async () => {
+  const { FetchError } = await import('../../errors/FetchError');
+  // The deployed CDN's router fallback, observed for POST /dep_tree on 2026-11-01.
+  const body = JSON.stringify({ status: 404, message: 'Not found', details: 'Not found' });
+  const deps = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`module-${i}`, '1.0.0']));
+  fetchMock.mockRejectedValueOnce(new FetchError({ status: 404, statusText: 'Not Found', url: 'https://preview.example/sandpack-cdn/dep_tree' } as Response, body));
+  await fetchManifest(deps);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const [url, init] = fetchMock.mock.calls[1];
+  expect(init).toBeUndefined();
+  expect(atob(decodeURIComponent(url.split('/').pop()))).toBe(`5(${JSON.stringify(deps)})`);
+});
+
 it('reports transport skew without suggesting source edits if neither route works', async () => {
   const { FetchError } = await import('../../errors/FetchError');
   fetchMock.mockRejectedValue(new FetchError({ status: 404, statusText: 'Not found', url: 'https://preview.example/sandpack-cdn/dep_tree' } as Response, 'Not found'));
