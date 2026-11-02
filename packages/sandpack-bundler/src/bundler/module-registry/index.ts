@@ -324,7 +324,21 @@ export class ModuleRegistry {
     this.bundler.modules.set(path, module);
     return file.d.map((dep) => {
       return async () => {
-        await module.addDependency(dep);
+        // Pre-linking is an optimization over the CDN's dependency lists, which
+        // cover EVERY code file of a package, including ones nothing imports: a
+        // CLI script (katex@0.19.1 `cli.js` → commander → `child_process`) or a
+        // test. Such a file must not fail the build here; if app code really
+        // imports it, the normal resolution path reports the genuine error.
+        try {
+          await module.addDependency(dep);
+        } catch (err) {
+          logger.warn(
+            `CDN pre-link skipped: "${dep}" from ${path} could not be resolved (${
+              err instanceof Error ? err.message : String(err)
+            })`,
+          );
+          return;
+        }
         // Transform ONLY the dependency just added (its resolved path), not the whole
         // (growing) dependency set on every add — the latter is ~O(deps²) per module
         // (177k calls vs 3k for a real closure, measured). Each dep is still transformed
@@ -332,7 +346,11 @@ export class ModuleRegistry {
         // modules short-circuit on `compiled != null`).
         const resolved = module.dependencyMap.get(dep);
         if (resolved) {
-          this.bundler.transformModule(resolved);
+          this.bundler.transformModule(resolved).catch((err) => {
+            logger.warn(
+              `CDN pre-transform skipped: ${resolved} (${err instanceof Error ? err.message : String(err)})`,
+            );
+          });
         }
       };
     });

@@ -115,7 +115,11 @@ pub async fn download_package_content(
     content_fetcher: &PackageContentFetcher,
 ) -> Result<Content, ServerError> {
     npm_db.ensure_package(package_name).await?;
-    let manifest = npm_db.get_package(package_name)?;
+    let mut manifest = npm_db.get_package(package_name)?;
+    // A version published after the manifest was cached: refresh once.
+    if !manifest.versions.contains_key(version) && npm_db.refresh_package(package_name).await? {
+        manifest = npm_db.get_package(package_name)?;
+    }
     if let Some(version_data) = manifest.versions.get(version) {
         let content = content_fetcher.get(version_data.tarball.as_str()).await?;
         Ok(content)

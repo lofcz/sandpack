@@ -10,7 +10,10 @@ use tracing::{error, warn};
 
 use crate::{
     app_error::ServerError,
-    npm_replicator::{database::NpmDatabase, types::document::MinimalPackageData},
+    npm_replicator::{
+        database::{NpmDatabase, MANIFEST_MAX_AGE},
+        types::document::MinimalPackageData,
+    },
 };
 
 use super::cached::CachedPackageProcessor;
@@ -156,9 +159,23 @@ async fn resolve_dep(
     npm_db: &NpmDatabase,
     pkg_processor: &CachedPackageProcessor,
 ) -> ResolveDepResult {
-    npm_db.ensure_package(&req.source).await?;
-    let manifest = npm_db.get_package(&req.source)?;
-    let Some(resolved_version) = req.resolve_version(&manifest) else {
+    // Tags and ranges follow npm (a day-old `latest` is refreshed); an exact
+    // version only re-downloads the manifest when it is missing from the copy.
+    match req.version_range {
+        VersionRange::Alias(_) => {
+            npm_db
+                .ensure_fresh_package(&req.source, MANIFEST_MAX_AGE)
+                .await?
+        }
+        VersionRange::Range(_) => npm_db.ensure_package(&req.source).await?,
+    }
+    let mut manifest = npm_db.get_package(&req.source)?;
+    let mut resolved = req.resolve_version(&manifest);
+    if resolved.is_none() && npm_db.refresh_package(&req.source).await? {
+        manifest = npm_db.get_package(&req.source)?;
+        resolved = req.resolve_version(&manifest);
+    }
+    let Some(resolved_version) = resolved else {
         return Err(ServerError::PackageVersionNotFound(
             req.name,
             req.range_str,
