@@ -33,7 +33,9 @@ describe('G0-0 bundler evaluate smoke (run the compiled graph + edit pickup)', (
     // Without HMR an edit triggers a full page reload (not an incremental
     // re-transpile); a real app enables HMR by registering `module.hot`, so do the
     // same here to exercise the incremental edit path.
-    h.bundler.enableHMR();
+    const hot = h.bundler.getModule(underAppRoot('/src/answer.ts'))!.hot.ensureHMRConfig();
+    hot.setType('accept');
+    hot.setSelfAccepted(true);
     await fs.promises.writeFile(
       underAppRoot('/src/answer.ts'),
       'const answer: number = 99;\nexport default answer;\n',
@@ -50,4 +52,21 @@ describe('G0-0 bundler evaluate smoke (run the compiled graph + edit pickup)', (
     const answerModule = Object.entries(mods).find(([k]) => k.includes('answer.ts'))?.[1];
     expect(answerModule?.source?.compiledCode).toContain('99'); // the edit was picked up
   }, 60000);
+
+  it('requests a host refresh when a changed module cannot accept HMR', async () => {
+    const module = h.bundler.getModule(underAppRoot('/src/answer.ts'))!;
+    module.hot.hmrConfig!.setType('decline');
+    h.sentMessages.length = 0;
+    const statuses: string[] = [];
+    const subscription = h.bundler.onStatusChange((status) => statuses.push(status));
+    try {
+      module.resetCompilation();
+      expect(h.bundler.isReloading).toBe(true);
+      expect(statuses).toEqual(['reloading']);
+      expect(h.sentMessages).toEqual([{ type: 'request-refresh', data: undefined }]);
+      await expect(h.bundler.compile()).resolves.toBeNull();
+    } finally {
+      subscription.dispose();
+    }
+  });
 });

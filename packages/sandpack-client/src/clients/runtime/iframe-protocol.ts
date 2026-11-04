@@ -4,6 +4,23 @@ import type {
   UnsubscribeFunction,
 } from "../../types";
 
+// R3-367: crypto-random, 64-bit channel id (16 hex chars from 8 random bytes).
+// This used to be Math.floor(Math.random()*1e6) — guessable, and the id was
+// console.logged at registration. SECURITY INVARIANT (do not weaken): the id is
+// a CORRELATION key only — every incoming message is authenticated by the
+// `event.source === this.frameWindow` check in eventListener() below, NEVER by
+// the id alone. The crypto entropy is defense-in-depth on top of that check.
+// `string | number` on the wire stays compatible with ids older
+// peers minted as numbers: both sides compare the echoed value they themselves
+// sent, so the type never has to agree across versions.
+const randomChannelId = (): string => {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+};
+
 export class IFrameProtocol {
   private frameWindow: Window | null;
   private origin: string;
@@ -16,8 +33,9 @@ export class IFrameProtocol {
   public channelListeners: Record<number, ListenerFunction> = {};
   private channelListenersCount = 0;
 
-  // Random number to identify this instance of the client when messages are coming from multiple iframes
-  readonly channelId: number = Math.floor(Math.random() * 1000000);
+  // Random id to identify this instance of the client when messages are coming
+  // from multiple iframes — crypto-random (see randomChannelId above).
+  readonly channelId: string = randomChannelId();
 
   constructor(iframe: HTMLIFrameElement, _origin: string) {
     this.frameWindow = iframe.contentWindow;
@@ -33,6 +51,7 @@ export class IFrameProtocol {
   }
 
   cleanup(): void {
+    this.frameWindow = null;
     window.removeEventListener("message", this.eventListener);
     this.globalListeners = {};
     this.channelListeners = {};
@@ -54,17 +73,16 @@ export class IFrameProtocol {
       return;
     }
 
-    // eslint-disable-next-line no-console -- dev registration trace
-    console.log(
-      "[IFrameProtocol] Registering iframe with channelId",
-      this.channelId,
-      this,
-    );
+    // R3-367: no channelId log — the id is not secret-critical, but logging it
+    // at registration handed an observer the correlation key for free (the
+    // evt.source check below is the actual authentication).
 
     // Order matters: the bundler reads ports[0] as the fs port and ports[1] as
     // the Babel worker port. `filter` keeps that order as long as the fs port
     // is always present (it is, in normal operation).
-    const ports = [port, babelPort].filter((p): p is MessagePort => p != null);
+    const ports = [port, babelPort].filter(
+      (p): p is MessagePort => p != null,
+    );
 
     this.frameWindow.postMessage(
       {
@@ -135,13 +153,17 @@ export class IFrameProtocol {
 
   // Handles message windows coming from iframes
   private eventListener(evt: MessageEvent): void {
-    // skip events originating from different iframes
+    // SECURITY INVARIANT (R3-367, twin of the randomChannelId comment): this
+    // source check — not the channelId — is what authenticates an incoming
+    // message. The id below only routes a message ALREADY accepted here to the
+    // owning instance. Weakening or reordering this check would let any iframe
+    // on the page speak on the bundler channel.
     if (evt.source !== this.frameWindow) {
       return;
     }
 
     const message = evt.data;
-    if (!message.codesandbox) {
+    if (!message || !message.codesandbox) {
       return;
     }
 

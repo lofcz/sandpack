@@ -140,6 +140,10 @@ const hasOwnKey = (map: object, key: string): boolean => Object.prototype.hasOwn
 
 export class Bundler {
   private lastHTML: string | null = null;
+  private reloadRequested = false;
+  get isReloading(): boolean {
+    return this.reloadRequested;
+  }
   // Public so transformers reached via `Transformer#init(bundler)` can use the
   // parent handshake — the `BabelTransformer` needs `getBabelPort()`.
   messageBus: IFrameParentMessageBus;
@@ -1126,22 +1130,29 @@ export class Bundler {
    * transform queue re-reads them.
    */
   private collectChangedFiles(): string[] {
-    return this.fs.drainPendingChanges();
+    // The bundler writes these outputs itself. They invalidate read caches but
+    // must never trigger a source rebuild (or a reload after an unchanged edit).
+    return this.fs.drainPendingChanges().filter(
+      (path) => path !== '/transpiled' && !path.startsWith('/transpiled/'),
+    );
   }
 
   /**
-   * Signal an imminent `location.reload()` and return `null` so `runCompile`
+   * Ask the host to navigate the iframe and return `null` so `runCompile`
    * does not emit a false terminal `done`/`success` for the aborted compile.
    */
-  private beginReload(reason: string): null {
+  requestReload(reason: string): null {
+    if (this.reloadRequested) return null;
+    this.reloadRequested = true;
     logger.debug(reason);
     this.onStatusChangeEmitter.fire('reloading');
-    location.reload();
+    this.messageBus.sendMessage('request-refresh');
     return null;
   }
 
   /** `null` means the page is reloading — caller must not treat it as success. */
   async compile(): Promise<(() => any) | null> {
+    if (this.reloadRequested) return null;
     if (!this.preset) {
       throw new BundlerError('Cannot compile before preset has been initialized');
     }
@@ -1213,7 +1224,7 @@ export class Bundler {
       // reload loop.
       const changesNeedingHMR = changedFiles.filter((f) => f !== underAppRoot('/package.json'));
       if (!this.hasHMR && changesNeedingHMR.length) {
-        return this.beginReload('HMR is not enabled, doing a full page refresh');
+        return this.requestReload('HMR is not enabled, doing a full page refresh');
       }
     } else {
       // First load: files are read lazily from zenfs as the bundler traverses
@@ -1239,10 +1250,15 @@ export class Bundler {
         const module = this.getModule(changedFile);
         if (module) {
           module.resetCompilation();
+          if (this.reloadRequested) {
+            void Promise.allSettled(promises);
+            return null;
+          }
           promises.push(this.transformModule(changedFile));
         }
       }
       await Promise.all(promises);
+      if (this.reloadRequested) return null;
     }
 
     const pkgJsonChanged = changedFiles.find((f) => f === underAppRoot('/package.json'));
@@ -1275,7 +1291,7 @@ export class Bundler {
       } else {
         const declared = this.declaredDependencies();
         if (this.installedDependencyChanged(declared)) {
-          return this.beginReload('Dependencies changed, reloading');
+          return this.requestReload('Dependencies changed, reloading');
         }
         this.moduleRegistry.setDeclared(declared);
       }
@@ -1381,6 +1397,7 @@ export class Bundler {
     emitPerfMarker(this.messageBus, 'ir.transpile', { moduleCount: this.modules.size });
 
     return () => {
+      if (this.reloadRequested) return;
       // Evaluate
       logger.debug('Evaluating...');
 
@@ -1473,7 +1490,7 @@ export class Bundler {
     const html = (await this.getHTMLEntry()) ?? '<div id="root"></div>';
     if (this.lastHTML) {
       if (this.lastHTML !== html) {
-        this.beginReload('HTML entry changed, reloading');
+        this.requestReload('HTML entry changed, reloading');
       }
       return;
     } else {

@@ -57,25 +57,13 @@ describe('G0-4 [harness] edit/reload behavior over the flipped mount table', () 
     await h.bundler.compile();
 
     expect(reloadSpy).not.toHaveBeenCalled();
-  }, 60000);
-
-  it('without HMR, a real edit triggers a full page reload (parity baseline)', async () => {
-    // No `enableHMR()` yet — a non-package.json change with no HMR falls back to a reload
-    // (returns before any transform, so no babel here).
-    await fs.promises.writeFile(
-      underAppRoot('/src/answer.ts'),
-      'const answer: number = 8;\nexport default answer;\n',
-    );
-    h.bundler.markFilesChanged([underAppRoot('/src/answer.ts')]);
-    reloadSpy.mockClear();
-
-    await h.bundler.compile();
-
-    expect(reloadSpy).toHaveBeenCalled();
+    expect(h.sentMessages.filter((m) => m.type === 'request-refresh')).toHaveLength(0);
   }, 60000);
 
   it('rapid successive edits before one recompile are not lost — the latest is re-transpiled', async () => {
-    h.bundler.enableHMR();
+    const hot = h.bundler.getModule(underAppRoot('/src/answer.ts'))!.hot.ensureHMRConfig();
+    hot.setType('accept');
+    hot.setSelfAccepted(true);
 
     // Two edits queued back-to-back before the recompile drains them: the change queue
     // must retain the racing edit, and the recompile must re-read the LATEST bytes from
@@ -97,5 +85,25 @@ describe('G0-4 [harness] edit/reload behavior over the flipped mount table', () 
     const compiled = compiledCodeFor(h, 'answer.ts');
     expect(compiled).toContain('77'); // the latest edit won
     expect(compiled).not.toContain('55'); // the superseded edit did not leak through
+  }, 60000);
+
+  it('without HMR, a real edit triggers a full page reload (parity baseline)', async () => {
+    h.bundler.hasHMR = false;
+    // A non-package.json change with no HMR falls back to a host refresh.
+    // (returns before any transform, so no babel here).
+    await fs.promises.writeFile(
+      underAppRoot('/src/answer.ts'),
+      'const answer: number = 8;\nexport default answer;\n',
+    );
+    h.bundler.markFilesChanged([underAppRoot('/src/answer.ts')]);
+    reloadSpy.mockClear();
+
+    await h.bundler.compile();
+
+    expect(reloadSpy).not.toHaveBeenCalled();
+    expect(h.sentMessages.filter((m) => m.type === 'request-refresh')).toHaveLength(1);
+    // The old document waits for its replacement instead of compiling again.
+    await expect(h.bundler.compile()).resolves.toBeNull();
+    expect(h.sentMessages.filter((m) => m.type === 'request-refresh')).toHaveLength(1);
   }, 60000);
 });

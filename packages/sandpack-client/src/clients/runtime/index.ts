@@ -20,10 +20,18 @@ import { SandpackClient } from "../base";
 import { createSandboxedIframe, ensureSandboxed } from "../iframe-factory";
 
 import Protocol from "./file-resolver-protocol";
+import {
+  codeSandboxExportAllowed,
+  notifyCodeSandboxExportRefused,
+} from "./gestureGate";
 import { IFrameProtocol } from "./iframe-protocol";
 import { handleImmutableFetch } from "./immutable-fetch-protocol";
+import { InitializationGuard } from "./initialization-guard";
 import { EXTENSIONS_MAP } from "./mime";
-import type { IPreviewRequestMessage, IPreviewResponseMessage } from "./types";
+import type {
+  IPreviewRequestMessage,
+  IPreviewResponseMessage,
+} from "./types";
 import { CHANNEL_NAME, type SandpackRuntimeMessage } from "./types";
 import { getExtension, getTemplate } from "./utils";
 
@@ -36,6 +44,13 @@ const BUNDLER_URL =
         /\./g,
         "-",
       )}${SUFFIX_PLACEHOLDER}-sandpack.codesandbox.io/`;
+
+// ── R3-367 — the getCodeSandboxURL gesture gate (see gestureGate.ts) ─────────
+
+export {
+  codeSandboxExportAllowed,
+  notifyCodeSandboxExportRefused,
+} from "./gestureGate";
 
 export class SandpackRuntime extends SandpackClient {
   fileResolverProtocol?: Protocol;
@@ -52,8 +67,21 @@ export class SandpackRuntime extends SandpackClient {
   unsubscribeFsWatcher?: () => void;
   iframeProtocol: IFrameProtocol;
   fs: SandpackFS;
+  /** Set once the teardown below has run, so a rogue document posting in a loop
+   *  cannot re-run `destroy()` or re-fire the host callback. */
+  private refusedBoot = false;
+  private destroyed = false;
+  private initializationVersion = 0;
   /** Parent-owned Babel transpiler worker, connected to the iframe by port. */
   private babelWorker: Worker | null = null;
+  /**
+   * Which `initialized` messages this client will honour (R3-353). Armed by
+   * {@link setLocationURLIntoIFrame} — i.e. by every navigation THIS CLIENT
+   * causes — and spent when a boot arrives. A boot the host did not cause finds
+   * nothing armed, which is the whole check. See `initialization-guard.ts` for
+   * why the parent asks "did I put you there?" rather than "where are you?".
+   */
+  private readonly initGuard = new InitializationGuard();
 
   constructor(
     selector: string | HTMLIFrameElement,
@@ -98,74 +126,147 @@ export class SandpackRuntime extends SandpackClient {
 
     this.unsubscribeGlobalListener = this.iframeProtocol.globalListen(
       (mes: SandpackMessage) => {
-        if (mes.type !== "initialized" || !this.iframe.contentWindow) {
+        if (
+          this.destroyed ||
+          mes.type !== "initialized" ||
+          !this.iframe.contentWindow
+        ) {
           return;
         }
+        // R3-353 — the re-register guard. A sandboxed frame may always navigate
+        // ITSELF (no sandbox flag governs that), and after it does, the browsing
+        // context is the same one: `iframe.contentWindow` returns the same
+        // WindowProxy, so `IFrameProtocol`'s `evt.source !== this.frameWindow`
+        // check still passes. Whatever document is in the frame now — the
+        // policy-free baseline bundler document, or a page on an origin the app
+        // chose — can therefore post `initialized` and be handed a FRESH fs port
+        // and a fresh registration, inheriting this frame's grants.
+        //
+        // That is the escalation, and it is bigger than the CSP loss the finding
+        // leads with: the CSP travels with the document, but so does the host
+        // RELATIONSHIP, and the relationship is worth more.
+        //
+        // The host cannot read a cross-origin frame's location, so it cannot ask
+        // "where are you?". It can ask "did I put you there?" — which is the same
+        // question and one it can answer: every legitimate (re)boot follows a
+        // navigation THIS CLIENT performed (the constructor, and the `refresh`
+        // dispatch), both of which go through `setLocationURLIntoIFrame`.
+        if (!this.consumeExpectedInitialization()) return;
+        const version = ++this.initializationVersion;
         // this may not work with a boundedcontext, it may require an actual FS instance
         const remotePortPromise = this.fs.connectRemote();
-        remotePortPromise.then(async (remotePort) => {
-          /**
-           * Lazy file resolution over the iframe protocol, backed by the
-           * {@link SandpackFS} passed on construction. Created before `register`
-           * so it's ready for the bundler's lazy file reads as soon as the
-           * bundler has the fs port.
-           */
-          this.fileResolverProtocol = new Protocol(
-            "fs",
-            async (data) => {
-              if (data.method === "isFile") {
-                return this.sandboxSetup.fs.exists(data.params[0]);
-              } else if (data.method === "readFile") {
-                return this.sandboxSetup.fs.readFile(data.params[0]);
-              } else {
-                throw new Error("Method not supported");
+        remotePortPromise.then(
+          async (remotePort) => {
+            try {
+              if (
+                this.destroyed ||
+                version !== this.initializationVersion
+              ) {
+                remotePort.close();
+                return;
               }
-            },
-            this.iframeProtocol,
-          );
-
-          /**
-           * Parent-side fetch + persistent cache for immutable module URLs.
-           * The iframe's opaque origin has no storage, so it forwards these
-           * here (see immutable-fetch-protocol.ts for the allowlist).
-           */
-          this.immutableFetchProtocol = new Protocol(
-            "immutable-fetch",
-            async (data) => {
-              if (data.method !== "fetch") {
-                throw new Error("Method not supported");
+              const config = await this.computeInitConfig();
+              if (
+                this.destroyed ||
+                version !== this.initializationVersion
+              ) {
+                remotePort.close();
+                return;
               }
-              // params[1] is an optional `sha384-…` integrity the caller pins
-              // for this URL (SDK files); the cache verifies against it.
-              // Extra prefixes (e.g. Priprava `/sandpack-cdn/package/`) come
-              // from ClientOptions.immutableUrlPrefixes.
-              return handleImmutableFetch(
-                data.params[0],
-                data.params[1],
-                this.options.immutableUrlPrefixes,
+              /**
+               * Lazy file resolution over the iframe protocol, backed by the
+               * {@link SandpackFS} passed on construction. Created before `register`
+               * so it's ready for the bundler's lazy file reads as soon as the
+               * bundler has the fs port.
+               */
+              this.fileResolverProtocol = new Protocol(
+                "fs",
+                async (data) => {
+                  if (data.method === "isFile") {
+                    return this.sandboxSetup.fs.exists(data.params[0]);
+                  } else if (data.method === "readFile") {
+                    return this.sandboxSetup.fs.readFile(data.params[0]);
+                  } else {
+                    throw new Error("Method not supported");
+                  }
+                },
+                this.iframeProtocol,
               );
-            },
-            this.iframeProtocol,
-          );
 
-          // The bundler watches the shared filesystem itself and self-triggers
-          // its initial build and every rebuild — there is no `compile` message
-          // anymore. It only needs the template/logLevel/recompileDelay once,
-          // delivered here alongside the transferred fs port.
-          const config = await this.computeInitConfig();
+              /**
+               * Parent-side fetch + persistent cache for immutable module URLs.
+               * The iframe's opaque origin has no storage, so it forwards these
+               * here (see immutable-fetch-protocol.ts for the allowlist).
+               */
+              this.immutableFetchProtocol = new Protocol(
+                "immutable-fetch",
+                async (data) => {
+                  if (data.method !== "fetch") {
+                    throw new Error("Method not supported");
+                  }
+                  // params[1] is an optional `sha384-…` integrity the caller pins
+                  // for this URL (SDK files); the cache verifies against it.
+                  // Extra prefixes (e.g. Priprava `/sandpack-cdn/package/`) come
+                  // from ClientOptions.immutableUrlPrefixes.
+                  return handleImmutableFetch(
+                    data.params[0],
+                    data.params[1],
+                    this.options.immutableUrlPrefixes,
+                  );
+                },
+                this.iframeProtocol,
+              );
 
-          // Spawn the Babel worker on the parent (real origin) and hand the
-          // iframe the other end of the channel. Transferred alongside the fs
-          // port as the second port in the handshake.
-          const babelPort = this.createBabelWorkerPort();
-          this.iframeProtocol.register(remotePort, config, babelPort);
-        });
+              // The bundler watches the shared filesystem itself and self-triggers
+              // its initial build and every rebuild — there is no `compile` message
+              // anymore. It only needs the template/logLevel/recompileDelay once,
+              // delivered here alongside the transferred fs port.
+              // Spawn the Babel worker on the parent (real origin) and hand the
+              // iframe the other end of the channel. Transferred alongside the fs
+              // port as the second port in the handshake.
+              const babelPort = this.createBabelWorkerPort();
+              this.iframeProtocol.register(remotePort, config, babelPort);
+            } catch (error) {
+              remotePort.close();
+              if (
+                !this.destroyed &&
+                version === this.initializationVersion
+              ) {
+                console.error(
+                  "[Sandpack] Failed to register frame",
+                  error,
+                );
+              }
+            }
+          },
+          (error) => {
+            if (
+              !this.destroyed &&
+              version === this.initializationVersion
+            ) {
+              console.error(
+                "[Sandpack] Failed to connect filesystem",
+                error,
+              );
+            }
+          },
+        );
       },
     );
 
     this.unsubscribeChannelListener = this.iframeProtocol.channelListen(
       (mes: SandpackMessage) => {
         switch (mes.type) {
+          case "request-refresh": {
+            // A request never grants a self-navigation: the host navigates to
+            // its own configured URL and only then arms the next boot.
+            // Coalesce requests while that navigation is pending: the old
+            // document must not accumulate registration credits by spamming.
+            if (this.initGuard.pending === 0) {
+              this.dispatch({ type: "refresh" });
+            }
+            break;
+          }
           case "start": {
             this.errors = [];
             break;
@@ -207,8 +308,10 @@ export class SandpackRuntime extends SandpackClient {
 
     if (this.options.teamId) {
       bundlerURL =
-        bundlerURL.replace("https://", "https://" + this.options.teamId + "-") +
-        `?cache=${Date.now()}`;
+        bundlerURL.replace(
+          "https://",
+          "https://" + this.options.teamId + "-",
+        ) + `?cache=${Date.now()}`;
     }
 
     if (this.options.experimental_enableServiceWorker) {
@@ -218,7 +321,8 @@ export class SandpackRuntime extends SandpackClient {
       bundlerURL = bundlerURL.replace(
         SUFFIX_PLACEHOLDER,
         `-${
-          this.options.experimental_stableServiceWorkerId ?? suffixes.join("-")
+          this.options.experimental_stableServiceWorkerId ??
+          suffixes.join("-")
         }`,
       );
     } else {
@@ -272,7 +376,10 @@ export class SandpackRuntime extends SandpackClient {
 
     const port = channel.port1;
     port.onmessage = (evt: MessageEvent) => {
-      if (typeof evt.data === "object" && evt.data.$channel === CHANNEL_NAME) {
+      if (
+        typeof evt.data === "object" &&
+        evt.data.$channel === CHANNEL_NAME
+      ) {
         switch (evt.data.$type) {
           case "preview/ready":
             // no op for now
@@ -365,15 +472,57 @@ export class SandpackRuntime extends SandpackClient {
   }
 
   public setLocationURLIntoIFrame(): void {
+    if (this.destroyed) return;
+    this.initializationVersion++;
+    this.fileResolverProtocol?.dispose();
+    this.immutableFetchProtocol?.dispose();
+    this.babelWorker?.terminate();
+    this.babelWorker = null;
     const urlSource = this.options.startRoute
       ? new URL(this.options.startRoute, this.bundlerURL).toString()
       : this.bundlerURL;
 
-    this.iframe.contentWindow?.location.replace(urlSource);
+    // Arm one expected `initialized` (R3-353): this navigation is host-initiated,
+    // so the boot that follows it is legitimate. Every legitimate (re)boot in the
+    // system passes through here — the constructor and the `refresh` dispatch —
+    // which is exactly what makes "nothing armed" mean "not ours".
+    this.initGuard.arm();
+    // One navigation per armed boot. Calling location.replace as well can
+    // schedule a second load and also throws for a cross-origin document.
     this.iframe.src = urlSource;
   }
 
+  /**
+   * Spend one armed `initialized`, or refuse this boot (R3-353).
+   *
+   * Refusing is terminal for this client: the frame is blanked so the rogue
+   * document — which still holds whatever it scraped before navigating — stops
+   * executing, the client detaches, and the host is told through
+   * `onUnexpectedNavigation` so it can surface or re-create the frame. Nothing is
+   * connected and nothing is registered, so no fs port is ever minted for it.
+   */
+  private consumeExpectedInitialization(): boolean {
+    if (this.initGuard.consume()) return true;
+    if (this.refusedBoot) return false; // already torn down; stay quiet
+    this.refusedBoot = true;
+    console.error(
+      "[Sandpack] Refusing to register a frame that booted from a navigation " +
+        "this client did not perform (R3-353). The frame is being torn down.",
+    );
+    try {
+      this.iframe.src = "about:blank";
+    } catch {
+      /* the element may already be gone */
+    }
+    this.destroy();
+    this.options.onUnexpectedNavigation?.();
+    return false;
+  }
+
   destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.initializationVersion++;
     this.unsubscribeChannelListener();
     this.unsubscribeGlobalListener();
     this.unsubscribeFsWatcher?.();
@@ -449,13 +598,22 @@ export class SandpackRuntime extends SandpackClient {
           ...setupPackageJSON,
           ...fsPackageJSON,
           dependencies: {
-            ...((fsPackageJSON.dependencies as Record<string, string>) ?? {}),
-            ...((setupPackageJSON.dependencies as Record<string, string>) ?? {}),
+            ...((fsPackageJSON.dependencies as Record<string, string>) ??
+              {}),
+            ...((setupPackageJSON.dependencies as Record<
+              string,
+              string
+            >) ?? {}),
           },
           devDependencies: {
-            ...((fsPackageJSON.devDependencies as Record<string, string>) ?? {}),
-            ...((setupPackageJSON.devDependencies as Record<string, string>) ??
-              {}),
+            ...((fsPackageJSON.devDependencies as Record<
+              string,
+              string
+            >) ?? {}),
+            ...((setupPackageJSON.devDependencies as Record<
+              string,
+              string
+            >) ?? {}),
           },
           // Prefer the handshake entry (devtools wrapper) when the host set one.
           main: setupPackageJSON.main ?? fsPackageJSON.main,
@@ -478,7 +636,8 @@ export class SandpackRuntime extends SandpackClient {
 
     return {
       template:
-        this.sandboxSetup.template || getTemplate(packageJSON, fileNameMap),
+        this.sandboxSetup.template ||
+        getTemplate(packageJSON, fileNameMap),
       logLevel: this.options.logLevel ?? SandpackLogLevel.Info,
       // Self-hosted sandpack-cdn root — bundler must not use any public CDN.
       sandpackCdnRoot: this.options.sandpackCdnRoot,
@@ -526,6 +685,7 @@ export class SandpackRuntime extends SandpackClient {
   }
 
   public dispatch(message: SandpackRuntimeMessage): void {
+    if (this.destroyed) return;
     /**
      * Intercept "refresh" dispatch: this will make sure
      * that the iframe is still in the location it's supposed to be.
@@ -538,6 +698,7 @@ export class SandpackRuntime extends SandpackClient {
       if (this.options.experimental_enableServiceWorker) {
         this.serviceWorkerHandshake();
       }
+      return;
     }
 
     this.iframeProtocol.dispatch(message);
@@ -548,13 +709,33 @@ export class SandpackRuntime extends SandpackClient {
   }
 
   /**
-   * Get the URL of the contents of the current sandbox
+   * Get the URL of the contents of the current sandbox.
+   *
+   * R3-367 — GESTURE-GATED. This POSTs the ENTIRE app filesystem to
+   * codesandbox.io from the parent page; the fs may contain the user's data
+   * (spaces, mounts), so the export is reachable only when the user has been
+   * active on the page (`navigator.userActivation.hasBeenActive` — the sticky
+   * flag, because the fs snapshot can outlive a transient-activation window).
+   * Without any user activation this refuses BEFORE reading the filesystem:
+   * nothing is posted, and a `sandpack-security-violation` CustomEvent is
+   * dispatched on the window for the host to journal (site-main wires the
+   * listener into its security-events seam).
    */
   public async getCodeSandboxURL(): Promise<{
     sandboxId: string;
     editorUrl: string;
     embedUrl: string;
   }> {
+    if (!codeSandboxExportAllowed()) {
+      // No user has ever interacted with this page: an export initiated here
+      // would be app- or script-initiated, not user-initiated. Refuse and make
+      // the refusal observable — BEFORE reading the filesystem.
+      notifyCodeSandboxExportRefused();
+      throw new Error(
+        "getCodeSandboxURL requires user activation (R3-367 gesture gate)",
+      );
+    }
+
     const snapshot = await snapshotFS(this.sandboxSetup.fs);
 
     const paramFiles = Object.keys(snapshot).reduce(
@@ -641,7 +822,9 @@ export class SandpackRuntime extends SandpackClient {
  * snapshot. Used wherever the bundler protocol still expects a flat module
  * map (the iframe `compile` payload, Open-in-CodeSandbox, etc.).
  */
-async function snapshotFS(fs: SandpackFS): Promise<Record<string, string>> {
+async function snapshotFS(
+  fs: SandpackFS,
+): Promise<Record<string, string>> {
   const paths = await fs.list();
   const out: Record<string, string> = {};
   await Promise.all(

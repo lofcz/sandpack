@@ -15,8 +15,8 @@
     "build:cdn": "node scripts/build-cdn.mjs",
     "deploy": "node scripts/deploy.mjs",
     "build-and-deploy": "bun run build && bun run deploy",
-    "typecheck": "npm --prefix packages/transpiler run typecheck && npm --prefix packages/sandpack-bundler run typecheck",
-    "test": "npm --prefix packages/sandpack-bundler run test && npm --prefix packages/transpiler run test"
+    "typecheck": "npm --prefix packages/sandpack-client run typecheck && npm --prefix packages/transpiler run typecheck && npm --prefix packages/sandpack-bundler run typecheck",
+    "test": "npm --prefix packages/sandpack-client run test && npm --prefix packages/sandpack-bundler run test && npm --prefix packages/transpiler run test"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

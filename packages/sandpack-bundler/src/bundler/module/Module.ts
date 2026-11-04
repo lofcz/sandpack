@@ -153,7 +153,8 @@ export class Module {
       //   }
       // }
 
-      location.reload();
+      this.bundler.requestReload('Module changed without HMR');
+      return;
     }
 
     this.bundler.transformModule(this.filepath);

@@ -15,6 +15,7 @@ import type {
 
 export default class Protocol {
   private _disposeMessageListener: UnsubscribeFunction;
+  private disposed = false;
 
   constructor(
     private type: string,
@@ -27,6 +28,7 @@ export default class Protocol {
           const message = msg as ProtocolRequestMessage;
           try {
             const result = await this.handleMessage(message);
+            if (this.disposed) return;
             const response: ProtocolResultMessage = {
               type: this.getTypeId(),
               msgId: message.msgId,
@@ -34,6 +36,7 @@ export default class Protocol {
             };
             this.protocol.dispatch(response as any);
           } catch (err: any) {
+            if (this.disposed) return;
             const response: ProtocolErrorMessage = {
               type: this.getTypeId(),
               msgId: message.msgId,
@@ -53,6 +56,7 @@ export default class Protocol {
   }
 
   public dispose() {
+    this.disposed = true;
     this._disposeMessageListener();
   }
 }

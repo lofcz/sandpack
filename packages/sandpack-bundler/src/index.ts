@@ -366,8 +366,7 @@ class SandpackInstance {
         this.handleRepoMount(message).catch(logger.error);
         break;
       case 'refresh':
-        window.location.reload();
-        this.messageBus.sendMessage('refresh');
+        this.messageBus.sendMessage('request-refresh');
         break;
     }
   }
@@ -600,6 +599,7 @@ class SandpackInstance {
 
     // --- Replace HTML (may itself trigger reloading)
     await this.bundler.replaceHTML();
+    if (this.bundler.isReloading) return;
 
     // --- Evaluation
     if (evaluate) {
@@ -610,6 +610,7 @@ class SandpackInstance {
         const evalStartTime = Date.now();
 
         evaluate();
+        if (this.bundler.isReloading) return;
 
         // Terminal ok: evaluate finished without throwing.
         this.messageBus.sendMessage('success');

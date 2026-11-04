@@ -6,7 +6,7 @@ import { IInitConfig } from './message-types';
  * used when this code is ran inside the iframe
  * */
 export class IFrameParentMessageBus {
-  private parentId: number | null = null;
+  private parentId: string | number | null = null;
   private messageId = 0;
 
   private messageEmitter = new Emitter();

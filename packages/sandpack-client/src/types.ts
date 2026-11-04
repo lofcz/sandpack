@@ -55,6 +55,9 @@ export interface ClientOptions {
    * back to a public CDN. Required for Priprava self-hosting.
    */
   sandpackCdnRoot?: string;
+  /** Called after an unexpected iframe boot has been refused and the client
+   * destroyed. The host may surface the refusal or create a fresh client. */
+  onUnexpectedNavigation?: () => void;
   /**
    * Level of logging to do in the bundler
    */
@@ -160,7 +163,10 @@ export interface ClientOptions {
 
 /** A batch-hydration snapshot entry list: each entry is a sandbox `/app`-rooted path
  *  + its content (text for source, bytes for the bundled package msgpack). R3-49b. */
-export type FsSnapshot = Array<{ path: string; content: string | Uint8Array }>;
+export type FsSnapshot = Array<{
+  path: string;
+  content: string | Uint8Array;
+}>;
 
 export interface SandboxSetup {
   /**
@@ -314,7 +320,8 @@ export type SandpackMessageConsoleMethods =
 
 export interface BaseSandpackMessage {
   type: string;
-  $id?: number;
+  /** Correlation only; incoming messages are authenticated by their source. */
+  $id?: string | number;
   codesandbox?: boolean;
   /**
    * Transferable objects (e.g. a `MessagePort`) to hand to the iframe alongside

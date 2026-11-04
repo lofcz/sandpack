@@ -57,6 +57,13 @@ Root resolution order: `--<root>=<path>` flag â†’ `SANDPACK_DEPLOY_<ROOT>` env â
 
 ## Inter-package versions
 
+The runtime client and bundler must be deployed together when updating the
+navigation guard. The bundler now sends `request-refresh`; the client navigates
+to its configured preview URL and authorizes that boot. Unsolicited iframe
+boots are refused, and `onUnexpectedNavigation` lets the host recreate the
+client or display the refusal. The host retains ownership of the supplied
+`SandpackFS`; destroying a client does not dispose that shared filesystem.
+
 Large CDN payloads use `POST /dep_tree` or `POST /package` with the same
 versioned base64 payload in a `text/plain` body (maximum 64 KiB). Short payloads
 retain the legacy GET routes. Deploy the CDN and enable request-body forwarding

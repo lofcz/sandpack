@@ -16,23 +16,79 @@
  */
 
 /**
- * Built-in URL prefixes whose responses never change for a given URL (the URL
- * encodes the exact content version). Only these (plus any prefixes passed via
- * {@link handleImmutableFetch}'s `extraPrefixes`) may be fetched on the
- * iframe's behalf, and they are safe to cache forever.
+ * Allowlist entries: an exact ORIGIN plus a path prefix matched against the
+ * NORMALIZED pathname. R3-364: the old check was `url.startsWith(prefix)` on
+ * the RAW string before any normalization, so
+ * `https://immediately-run.github.io/immediately-run-sdk/v/../x` passed the
+ * `/v/` check before normalization. Match the parsed origin and normalized
+ * pathname, including for host-supplied prefixes; reject remaining encoded
+ * dot segments that a server might interpret differently.
  */
-const IMMUTABLE_URL_ALLOWLIST = [
+interface AllowedOrigin {
+  origin: string;
+  pathPrefix: string;
+}
+
+const IMMUTABLE_URL_ALLOWLIST: AllowedOrigin[] = [
+  // The self-hosted module CDN is supplied through immutableUrlPrefixes.
   // unpkg files, requested by the bundler at registry-resolved exact versions.
-  "https://unpkg.com/",
-  // Self-hosted, versioned @lofcz/sdk builds (SDK_PACKAGING_SPEC
+  { origin: "https://unpkg.com", pathPrefix: "/" },
+  // Self-hosted, versioned @immediately-run/sdk builds (SDK_PACKAGING_SPEC
   // §5/§11, Option A). The /v/<version>/ path encodes the exact version, so
   // responses are immutable; the bundler fetches these when an app opts the SDK
   // into immediately.run.resolveFromRegistry. Keep in sync with the prefix the
   // bundler registers via registerImmutableUrlPrefix (sandbox bundler.ts).
-  "https://immediately-run.github.io/immediately-run-sdk/v/",
+  {
+    origin: "https://immediately-run.github.io",
+    pathPrefix: "/immediately-run-sdk/v/",
+  },
 ];
 
-const IMMUTABLE_CACHE_NAME = "sandpack-immutable-fetch-v1";
+/**
+ * Is a PARSED URL inside the allowlist? Origin is compared exactly (a userinfo
+ * or lookalike host cannot match) and the path prefix against the URL parser's
+ * NORMALIZED pathname; additionally, any dot segment — literal or
+ * percent-encoded, in any hex case — is refused, so no spelling of `..` can
+ * cross the prefix boundary after a server-side decode.
+ */
+const inPolicy = (u: URL, allowlist: AllowedOrigin[]): boolean => {
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password)
+    return false;
+  const segments = u.pathname.split("/").map((segment) => {
+    try {
+      return decodeURIComponent(segment).toLowerCase();
+    } catch {
+      return segment.toLowerCase();
+    }
+  });
+  if (segments.some((s) => s === ".." || s === ".")) return false;
+  if (/%2e/.test(u.pathname.toLowerCase())) return false;
+  return allowlist.some(
+    ({ origin, pathPrefix }) =>
+      u.origin === origin && u.pathname.startsWith(pathPrefix),
+  );
+};
+
+// Old entries lost their final redirect URL, so they cannot be revalidated.
+const IMMUTABLE_CACHE_NAME = "sandpack-immutable-fetch-v2";
+
+const allowedPrefix = (prefix: string): AllowedOrigin[] => {
+  try {
+    const url = new URL(prefix);
+    if (
+      !/^https?:$/.test(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      return [];
+    }
+    return [{ origin: url.origin, pathPrefix: url.pathname }];
+  } catch {
+    return [];
+  }
+};
 
 export interface ImmutableFetchResult {
   status: number;
@@ -64,7 +120,8 @@ const sha384 = async (body: ArrayBuffer): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-384", body);
   let bin = "";
   const view = new Uint8Array(digest);
-  for (let i = 0; i < view.length; i++) bin += String.fromCharCode(view[i]);
+  for (let i = 0; i < view.length; i++)
+    bin += String.fromCharCode(view[i]);
   return `sha384-${btoa(bin)}`;
 };
 
@@ -105,17 +162,24 @@ const matchesIntegrity = async (
 export async function handleImmutableFetch(
   url: unknown,
   integrity?: unknown,
-  extraPrefixes?: string[],
+  extraPrefixes: string[] = [],
 ): Promise<ImmutableFetchResult> {
-  const allowlist =
-    extraPrefixes && extraPrefixes.length > 0
-      ? IMMUTABLE_URL_ALLOWLIST.concat(extraPrefixes)
-      : IMMUTABLE_URL_ALLOWLIST;
-  if (
-    typeof url !== "string" ||
-    !allowlist.some((prefix) => url.startsWith(prefix))
-  ) {
+  const allowlist = IMMUTABLE_URL_ALLOWLIST.concat(
+    extraPrefixes.flatMap(allowedPrefix),
+  );
+  if (typeof url !== "string") {
     throw new Error(`URL not allowed for immutable fetch: ${String(url)}`);
+  }
+  // R3-364: the policy check runs on the PARSED, NORMALIZED URL — never on the
+  // raw string (see IMMUTABLE_URL_ALLOWLIST). A malformed URL refuses here.
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`URL not allowed for immutable fetch: ${url}`);
+  }
+  if (!inPolicy(parsed, allowlist)) {
+    throw new Error(`URL not allowed for immutable fetch: ${url}`);
   }
   const expected = typeof integrity === "string" ? integrity : undefined;
 
@@ -132,9 +196,26 @@ export async function handleImmutableFetch(
     }
   }
 
-  const res = await fetch(url);
+  const res = await fetch(parsed);
   if (!res.ok) {
-    throw new Error(`Immutable fetch failed with status ${res.status}: ${url}`);
+    throw new Error(
+      `Immutable fetch failed with status ${res.status}: ${url}`,
+    );
+  }
+  // R3-364: the prefix hosts are exact-version content hosts; a redirect that
+  // leaves the allowlist means the bytes did NOT come from an in-policy origin —
+  // refuse rather than serve (and never cache) them. The browser follows
+  // redirects itself (cross-origin `redirect: 'manual'` responses are opaque),
+  // so this is the final-URL check: `res.url` is where the bytes actually came
+  // from. A response that reports no URL (test doubles) skips the check.
+  if (
+    res.redirected &&
+    res.url !== "" &&
+    !inPolicy(new URL(res.url), allowlist)
+  ) {
+    throw new Error(
+      `Immutable fetch redirected outside the allowlist: ${res.url}`,
+    );
   }
   const result = await serializeResponse(res);
   if (cache && (await matchesIntegrity(result.body, expected))) {

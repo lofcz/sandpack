@@ -2,6 +2,7 @@ import {
   InMemory,
   resolveMountConfig,
   mount,
+  umount,
   type BoundContext,
   bindContext,
 } from "@zenfs/core";
@@ -62,26 +63,68 @@ const GUARDED_WRITE_METHODS = [
   "rmdir",
 ] as const;
 
-/**
- * Dev-only. Wrap the store-mutating methods on a SandpackFS instance's
- * bound-context `fs.promises` so any write that did **not** go through
- * `SandpackFS.writeFile` / `handleRemoteChange` (those use captured raw methods,
- * which stay unwrapped) emits a single loud `console.error` naming the offending
- * method + path, then still performs the write. Enforces the class writer invariant
- * (roadmap R3-110).
- *
- * This is a module-level function (not a class method) and its **only** reference
- * is behind the `if (IS_DEV)` branch in the constructor — so once a consumer's
- * production build folds `IS_DEV` to `false`, the branch and this whole function
- * tree-shake away (a class method would be retained). No-op in production.
- */
-function installOutOfBandGuard(fsContext: BoundContext): void {
-  const p = fsContext.fs.promises as unknown as Record<string, unknown>;
+const OUT_OF_BAND_GUARD_KEY = Symbol.for(
+  "@immediately-run/sandpack-client:out-of-band-guard",
+);
+
+const PRISTINE_WRITE_METHODS_KEY = Symbol.for(
+  "@immediately-run/sandpack-client:pristine-write-methods",
+);
+
+type WriteMethod = (...args: unknown[]) => unknown;
+type PromisesRecord = Record<string | symbol, unknown>;
+
+interface PristineMethods {
+  writeFile?: WriteMethod;
+  unlink?: WriteMethod;
+  mkdir?: WriteMethod;
+  [method: string]: WriteMethod | undefined;
+}
+
+interface PristineStore {
+  receiver: PromisesRecord;
+  methods: PristineMethods;
+}
+
+interface RawMethods {
+  writeFile: (path: string, data: string) => Promise<void>;
+  unlink: (path: string) => Promise<void>;
+  mkdir: (
+    path: string,
+    opts?: { recursive?: boolean },
+  ) => Promise<unknown>;
+}
+
+const asWriteMethod = (value: unknown): WriteMethod | undefined =>
+  typeof value === "function" ? (value as WriteMethod) : undefined;
+
+const isSidecarPath = (path: unknown): boolean =>
+  path === META_DIR || path === META_PATH;
+
+const faceAddsWritePolicy = (
+  face: PromisesRecord,
+  current: PromisesRecord,
+): boolean =>
+  face.writeFile !== current.writeFile ||
+  face.unlink !== current.unlink ||
+  face.mkdir !== current.mkdir;
+
+// site-main's `src/filesystem/roEditorContext.ts` returns a fresh write-wrapper
+// closure on every `fs.promises` access; that instability distinguishes a policy
+// face from a raw ZenFS face when no pristine stash exists yet.
+const isLikelyPolicyFace = (face: PromisesRecord): boolean =>
+  face.writeFile !== face.writeFile ||
+  face.unlink !== face.unlink ||
+  face.mkdir !== face.mkdir;
+
+function installOutOfBandGuard(
+  face: PromisesRecord,
+  pristine: PristineStore,
+): void {
   for (const method of GUARDED_WRITE_METHODS) {
-    const original = p[method];
+    const original = pristine.methods[method];
     if (typeof original !== "function") continue;
-    const call = original as (...args: unknown[]) => unknown;
-    p[method] = (...args: unknown[]) => {
+    face[method] = (...args: unknown[]) => {
       console.error(
         `[SandpackFS] out-of-band write: '${method}(${String(
           args[0],
@@ -90,9 +133,94 @@ function installOutOfBandGuard(fsContext: BoundContext): void {
           `write through SandpackFS (EDITOR_AS_APP_SPEC D-EDIT-1 writer invariant; ` +
           `LOCAL_DEVELOPMENT_SPEC §6.5).`,
       );
-      return call.apply(p, args);
+      return original.apply(pristine.receiver, args);
     };
   }
+  face[OUT_OF_BAND_GUARD_KEY] = true;
+}
+
+const capturePristine = (face: PromisesRecord): PristineStore => {
+  const methods: PristineMethods = {};
+  for (const method of GUARDED_WRITE_METHODS) {
+    const original = asWriteMethod(face[method]);
+    if (original) methods[method] = original;
+  }
+
+  const pristine: PristineStore = { receiver: face, methods };
+  face[PRISTINE_WRITE_METHODS_KEY] = pristine;
+  return pristine;
+};
+
+const captureRaw = (
+  face: PromisesRecord,
+  pristine: PristineStore,
+): RawMethods => {
+  const policy = faceAddsWritePolicy(face, pristine.receiver);
+  const faceWriteFile = asWriteMethod(face.writeFile);
+  const faceUnlink = asWriteMethod(face.unlink);
+  const faceMkdir = asWriteMethod(face.mkdir);
+
+  const call = (
+    faceMethod: WriteMethod | undefined,
+    pristineMethod: WriteMethod | undefined,
+    path: unknown,
+    args: unknown[],
+  ): Promise<unknown> => {
+    if (policy && !isSidecarPath(path) && faceMethod) {
+      return faceMethod.apply(face, args) as Promise<unknown>;
+    }
+
+    const method = (pristineMethod ?? faceMethod) as WriteMethod;
+    return method.apply(pristine.receiver, args) as Promise<unknown>;
+  };
+
+  return {
+    writeFile: (path, data) =>
+      call(faceWriteFile, pristine.methods.writeFile, path, [
+        path,
+        data,
+      ]) as Promise<void>,
+    unlink: (path) =>
+      call(faceUnlink, pristine.methods.unlink, path, [
+        path,
+      ]) as Promise<void>,
+    mkdir: (path, opts) =>
+      call(faceMkdir, pristine.methods.mkdir, path, [
+        path,
+        opts,
+      ]) as Promise<unknown>,
+  };
+};
+
+const capturePolicyRaw = (face: PromisesRecord): RawMethods => {
+  const faceWriteFile = face.writeFile as RawMethods["writeFile"];
+  const faceUnlink = face.unlink as RawMethods["unlink"];
+  const faceMkdir = face.mkdir as RawMethods["mkdir"];
+
+  return {
+    writeFile: (path, data) => faceWriteFile.call(face, path, data),
+    unlink: (path) => faceUnlink.call(face, path),
+    mkdir: (path, opts) => faceMkdir.call(face, path, opts),
+  };
+};
+
+function ensureGuard(fsContext: BoundContext): RawMethods {
+  const face = fsContext.fs.promises as unknown as PromisesRecord &
+    RawMethods;
+  const existing = face[PRISTINE_WRITE_METHODS_KEY] as
+    | PristineStore
+    | undefined;
+
+  if (!existing && isLikelyPolicyFace(face)) {
+    return capturePolicyRaw(face);
+  }
+
+  const pristine = existing ?? capturePristine(face);
+  const raw = captureRaw(face, pristine);
+  if (IS_DEV && !face[OUT_OF_BAND_GUARD_KEY]) {
+    installOutOfBandGuard(face, pristine);
+  }
+  return raw;
 }
 
 /**
@@ -116,7 +244,10 @@ export type SandpackFSListener = (change: SandpackFSChange) => void;
  * normalized to this object shape before being handed to
  * {@link SandpackFS.fromFiles}.
  */
-export type SandpackFilesInput = Record<string, FileMeta & { code: string }>;
+export type SandpackFilesInput = Record<
+  string,
+  FileMeta & { code: string }
+>;
 
 let mountCounter = 0;
 
@@ -152,13 +283,23 @@ export class SandpackFS {
   private sidecarEnvironment: string | undefined = undefined;
   private sidecarMode: string | undefined = undefined;
   private disposed = false;
+  /** The ZenFS mount point this instance created and is therefore allowed to
+   *  unmount in {@link dispose}. Unset for an adopted context, whose lifecycle
+   *  belongs to the caller. */
+  private ownedMountPoint: string | undefined = undefined;
 
-  // Raw (unguarded) fs write methods captured at construction, bound to this
-  // instance's bound-context `promises`. SandpackFS's own writes go through these
-  // so they never trip the dev out-of-band guard, which is installed *on*
-  // `fsContext.fs.promises` (the object external callers reach via the public
-  // `fsContext`). Reads keep using `fsContext.fs.promises` directly (unguarded).
-  private readonly rawWriteFile: (path: string, data: string) => Promise<void>;
+  // Pristine fs write methods captured before the dev guard wraps the shared
+  // `fsContext.fs.promises` target and stashed once per target under
+  // {@link PRISTINE_WRITE_METHODS_KEY} (see {@link ensureGuard}). SandpackFS's own
+  // writes go through these so they never trip the dev out-of-band guard, including
+  // when later adoptions reach the same target through fresh Proxy faces. When an
+  // adopting face adds its own write policy, source writes keep that face's policy
+  // and only the exact `/.sandpack` sidecar writes use the pristine methods. Reads
+  // keep using `fsContext.fs.promises` directly.
+  private readonly rawWriteFile: (
+    path: string,
+    data: string,
+  ) => Promise<void>;
   private readonly rawUnlink: (path: string) => Promise<void>;
   private readonly rawMkdir: (
     path: string,
@@ -176,15 +317,10 @@ export class SandpackFS {
     // iframe writes go through `remotePortFactory`/`handleRemoteChange` instead.
     private readonly onWrite?: (path: string) => void,
   ) {
-    const p = fsContext.fs.promises as unknown as {
-      writeFile: (path: string, data: string) => Promise<void>;
-      unlink: (path: string) => Promise<void>;
-      mkdir: (path: string, opts?: { recursive?: boolean }) => Promise<unknown>;
-    };
-    this.rawWriteFile = p.writeFile.bind(p);
-    this.rawUnlink = p.unlink.bind(p);
-    this.rawMkdir = p.mkdir.bind(p);
-    if (IS_DEV) installOutOfBandGuard(fsContext);
+    const raw = ensureGuard(fsContext);
+    this.rawWriteFile = raw.writeFile;
+    this.rawUnlink = raw.unlink;
+    this.rawMkdir = raw.mkdir;
   }
 
   /**
@@ -217,6 +353,9 @@ export class SandpackFS {
     const ctxt = bindContext({ root: prefix });
 
     const instance = new SandpackFS(ctxt, remotePortFactory, onWrite);
+    // We created the mount, so we own it: `dispose()` may unmount it. An adopted
+    // context (`fromFileSystemContext`) leaves this unset and is never unmounted.
+    instance.ownedMountPoint = prefix;
     if (options.environment !== undefined) {
       instance.sidecarEnvironment = options.environment;
     }
@@ -230,8 +369,7 @@ export class SandpackFS {
 
   /**
    * Adopt an existing ZenFS filesystem. The caller is responsible for its
-   * lifecycle - {@link dispose} will unmount but not destroy the underlying
-   * store.
+   * lifecycle; {@link dispose} leaves the adopted mount and store intact.
    */
   static async fromFileSystemContext(
     fsContext: BoundContext,
@@ -376,6 +514,29 @@ export class SandpackFS {
     this.notify({ path: normalize(path), external: true });
   }
 
+  /**
+   * Tear this instance down: drop every subscriber, stop emitting changes, and
+   * release the ZenFS mount if we created it ({@link fromFiles}). An *adopted*
+   * context ({@link fromFileSystemContext}) is left mounted — its lifecycle
+   * belongs to the caller.
+   *
+   * ZenFS mounts live in a process-global table, so an instance that is never
+   * disposed keeps its backing store alive for the page's lifetime. Idempotent.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.listeners.clear();
+    if (this.ownedMountPoint) {
+      try {
+        umount(this.ownedMountPoint);
+      } catch {
+        /* already unmounted — disposal must never throw */
+      }
+      this.ownedMountPoint = undefined;
+    }
+  }
+
   // ------------------------------------------------------------------
   // Internals
   // ------------------------------------------------------------------
@@ -420,7 +581,9 @@ export class SandpackFS {
     const absDir = this.toAbs(relDir);
     let entries: string[];
     try {
-      entries = (await this.fsContext.fs.promises.readdir(absDir)) as string[];
+      entries = (await this.fsContext.fs.promises.readdir(
+        absDir,
+      )) as string[];
     } catch {
       return;
     }
@@ -477,7 +640,10 @@ export class SandpackFS {
     if (this.sidecarMode !== undefined) {
       sidecar.mode = this.sidecarMode;
     }
-    await this.rawWriteFile(this.toAbs(META_PATH), JSON.stringify(sidecar));
+    await this.rawWriteFile(
+      this.toAbs(META_PATH),
+      JSON.stringify(sidecar),
+    );
   }
 
   private async refreshMetaCache(): Promise<void> {

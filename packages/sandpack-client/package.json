@@ -48,7 +48,7 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('sandpack',{recursive:true,force:true});require('fs').rmSync('src/clients/node/inject-scripts/dist',{recursive:true,force:true})\"",
     "prebuild": "npm run clean",
-    "test": "jest . --transformIgnorePatterns \"node_modules/(?!@zenfs)/\"",
+    "test": "jest",
     "lint": "eslint '**/*.ts?(x)' --fix",
     "build": "rollup -c --bundleConfigAsCjs",
     "build:publish": "npm run build && gulp",
@@ -56,7 +56,8 @@
     "format": "prettier --write '**/*.{ts,tsx,js,jsx}'",
     "format:check": "prettier --check '**/*.{ts,tsx}'",
     "dev": "npm run build -- --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
   },
   "files": [
     "dist",
@@ -77,11 +78,15 @@
     "@rollup/plugin-replace": "^6.0.0",
     "@rollup/plugin-terser": "^0.4.4",
     "@rollup/plugin-typescript": "^12.1.0",
+    "@swc-node/jest": "^1.4.3",
+    "@types/jest": "^27.4.1",
     "@types/mime-db": "^1.43.6",
     "@types/node": "^22.10.2",
     "@zenfs/core": "~2.5.8",
     "del": "^6.1.1",
     "gulp": "^5.0.0",
+    "jest": "^27.5.1",
+    "node-fetch": "^3.2.4",
     "rollup": "^4.24.0",
     "rollup-plugin-string": "^3.0.0",
     "typescript": "^5.7.2"

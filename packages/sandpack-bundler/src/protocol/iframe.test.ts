@@ -14,6 +14,17 @@ const registerFrame = (extra: Record<string, unknown>) =>
   );
 
 describe('IFrameParentMessageBus register-frame', () => {
+  it.each(['0123456789abcdef', 12345])('echoes the host channel id unchanged: %s', (id) => {
+    const bus = new IFrameParentMessageBus();
+    registerFrame({ id });
+    const post = jest.spyOn(window.parent, 'postMessage').mockImplementation(() => {});
+    try {
+      bus.sendMessage('request-refresh');
+      expect(post).toHaveBeenCalledWith({ type: 'request-refresh', codesandbox: true, $id: id }, '*');
+    } finally {
+      post.mockRestore();
+    }
+  });
   it('reads dirtyPaths into the init config', async () => {
     const bus = new IFrameParentMessageBus();
     registerFrame({ dirtyPaths: ['/src/App.tsx', '/src/old.ts'] });
