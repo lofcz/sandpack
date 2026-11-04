@@ -37,6 +37,7 @@ export class IFrameParentMessageBus {
       // fs port. `register-frame` is handled before the `data.codesandbox` guard
       // and the parent omits that flag here, so read the fields directly.
       const config: IInitConfig = {
+        hostControlledRefresh: data.hostControlledRefresh === true,
         template: data.template,
         logLevel: data.logLevel,
         // Self-hosted CDN root (Priprava `/sandpack-cdn/`) — pin before any
@@ -148,6 +149,16 @@ export class IFrameParentMessageBus {
 
   _postMessage(message: any) {
     window.parent.postMessage(message, '*');
+  }
+
+  requestRefresh(): void {
+    if (this.initConfig?.hostControlledRefresh) {
+      this.sendMessage('request-refresh');
+    } else {
+      // Published clients predating the navigation guard do not understand
+      // request-refresh. Preserve their reload flow during a staged rollout.
+      window.location.reload();
+    }
   }
 
   sendMessage(type: string, data: Record<string, any> = {}) {

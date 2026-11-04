@@ -8,6 +8,8 @@ import { SandpackLogLevel } from '../utils/logger';
  * values it still needs from the parent.
  */
 export interface IInitConfig {
+  /** The client handles request-refresh and owns every iframe navigation. */
+  hostControlledRefresh?: boolean;
   template: string;
   logLevel?: SandpackLogLevel;
   /**

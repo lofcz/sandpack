@@ -57,10 +57,11 @@ Root resolution order: `--<root>=<path>` flag â†’ `SANDPACK_DEPLOY_<ROOT>` env â
 
 ## Inter-package versions
 
-The runtime client and bundler must be deployed together when updating the
-navigation guard. The bundler now sends `request-refresh`; the client navigates
-to its configured preview URL and authorizes that boot. Unsolicited iframe
-boots are refused, and `onUnexpectedNavigation` lets the host recreate the
+Deploy the bundler before upgrading the runtime client. The new client announces
+`hostControlledRefresh` in its registration; the bundler then sends
+`request-refresh`, and the client navigates to its configured preview URL and
+authorizes that boot. Older clients retain their existing reload flow.
+Unsolicited iframe boots are refused, and `onUnexpectedNavigation` lets the host recreate the
 client or display the refusal. The host retains ownership of the supplied
 `SandpackFS`; destroying a client does not dispose that shared filesystem.
 

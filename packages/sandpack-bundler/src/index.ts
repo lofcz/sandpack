@@ -366,7 +366,7 @@ class SandpackInstance {
         this.handleRepoMount(message).catch(logger.error);
         break;
       case 'refresh':
-        this.messageBus.sendMessage('request-refresh');
+        this.messageBus.requestRefresh();
         break;
     }
   }

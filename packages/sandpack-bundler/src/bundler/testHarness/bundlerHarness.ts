@@ -128,6 +128,7 @@ export async function createBundlerHarness(
   const messageBus = {
     getBabelPort: () => Promise.resolve(babel.babelPort),
     sendMessage: (type: string, data?: unknown) => sentMessages.push({ type, data }),
+    requestRefresh: () => sentMessages.push({ type: 'request-refresh', data: undefined }),
     onMessage: () => ({ dispose: () => {} }),
     getFsPort: () => Promise.resolve(undefined),
     getInitConfig: () => Promise.resolve({ template: 'react' }),

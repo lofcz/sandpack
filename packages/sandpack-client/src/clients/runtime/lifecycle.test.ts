@@ -112,6 +112,7 @@ describe("runtime navigation and registration ownership", () => {
     await flush();
     expect(registrations()).toHaveLength(1);
     expect(registrations()[0]).toMatchObject({
+      hostControlledRefresh: true,
       id: expect.stringMatching(/^[0-9a-f]{16}$/),
       sandpackCdnRoot: "https://host.example/sandpack-cdn/",
       packageJSON: {

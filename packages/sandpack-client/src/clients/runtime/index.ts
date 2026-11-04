@@ -559,6 +559,7 @@ export class SandpackRuntime extends SandpackClient {
    * `compile` message, since the bundler now self-watches the filesystem.
    */
   private async computeInitConfig(): Promise<{
+    hostControlledRefresh: boolean;
     template?: string;
     logLevel: SandpackLogLevel;
     sandpackCdnRoot?: string;
@@ -635,6 +636,7 @@ export class SandpackRuntime extends SandpackClient {
     );
 
     return {
+      hostControlledRefresh: true,
       template:
         this.sandboxSetup.template ||
         getTemplate(packageJSON, fileNameMap),

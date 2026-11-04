@@ -1146,7 +1146,7 @@ export class Bundler {
     this.reloadRequested = true;
     logger.debug(reason);
     this.onStatusChangeEmitter.fire('reloading');
-    this.messageBus.sendMessage('request-refresh');
+    this.messageBus.requestRefresh();
     return null;
   }
 
