@@ -73,8 +73,10 @@ export interface BabelLoopback {
 /** Stand up one in-process babel worker over a loopback port; returns the bundler-side
  *  port. Drive it via `WorkerMessageBus` (as `BabelTransformer` does). */
 export async function createBabelLoopback(): Promise<BabelLoopback> {
-  const prevSelf = (globalThis as { self?: unknown }).self;
-  (globalThis as { self?: unknown }).self = fakeSelf;
+  const prevSelf = Object.getOwnPropertyDescriptor(globalThis, 'self');
+  // jsdom exposes self as an accessor; assigning to it may leave window.self
+  // unchanged, so the worker's connect listener never reaches the loopback.
+  Object.defineProperty(globalThis, 'self', { value: fakeSelf, writable: true, configurable: true });
   try {
     if (!workerLoaded) workerLoaded = import('../transforms/babel/babel-worker');
     await workerLoaded; // registers the module-level `onConnect` on `fakeSelf`
@@ -108,6 +110,7 @@ export async function createBabelLoopback(): Promise<BabelLoopback> {
       },
     };
   } finally {
-    (globalThis as { self?: unknown }).self = prevSelf;
+    if (prevSelf) Object.defineProperty(globalThis, 'self', prevSelf);
+    else delete (globalThis as { self?: unknown }).self;
   }
 }

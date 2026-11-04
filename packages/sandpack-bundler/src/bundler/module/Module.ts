@@ -49,9 +49,13 @@ export class Module {
     return Boolean(this.hot.hmrConfig?.isHot());
   }
 
-  /** Add dependency */
-  async addDependency(depSpecifier: string): Promise<void> {
-    const resolved = await this.bundler.resolveAsync(depSpecifier, this.filepath);
+  /** Add dependency; `resolve` overrides the bundler's resolution (which may install). */
+  async addDependency(
+    depSpecifier: string,
+    resolve: (specifier: string, from: string) => Promise<string> = (specifier, from) =>
+      this.bundler.resolveAsync(specifier, from),
+  ): Promise<void> {
+    const resolved = await resolve(depSpecifier, this.filepath);
     this.dependencies.add(resolved);
     this.dependencyMap.set(depSpecifier, resolved);
     this.bundler.addInitiator(resolved, this.id);

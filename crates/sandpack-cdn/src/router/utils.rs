@@ -6,7 +6,7 @@ use crate::app_error::ServerError;
 
 static VERSION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("^(\\d+)\\((.*)\\)$").unwrap());
-pub const LATEST_VERSION: u64 = 6;
+pub const LATEST_VERSION: u64 = 7;
 
 /// Generous upper bound for an encoded specifier list; legitimate queries
 /// (even ~1000 dependencies) stay well under it.

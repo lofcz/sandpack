@@ -152,7 +152,7 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     const declared = { react: '^19.2.5', '@types/react': '^19.2.5', '@types/example__widget': '^1.0.0', vite: '^7.0.0' };
     await r.fetchManifest(declared, computeRequestDepMap(declared, importedPackages(['react', 'react/jsx-runtime']), []));
     await r.preloadModules();
-    expect(mockedFetchManifest).toHaveBeenCalledWith({ react: '^19.2.5' }, declared);
+    expect(mockedFetchManifest).toHaveBeenCalledWith({ react: '^19.2.5' }, declared, {});
     expect(fetcher).not.toHaveBeenCalled();
     expect(r.manifest.some((d) => d.n.startsWith('@types/') || d.n === 'vite')).toBe(false);
   });

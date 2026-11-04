@@ -1,26 +1,45 @@
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 
 use crate::app_error::ServerError;
 use crate::package::cached::CachedPackageProcessor;
+use crate::package::entries::{entry_module, listing};
 use crate::package::process::parse_package_specifier;
 use crate::router::routes::AppState;
 
 use super::super::custom_reply::CustomReply;
 use super::super::error_reply::ErrorReply;
-use super::super::utils::decode_req_part;
+use super::super::utils::{decode_req_part, LATEST_VERSION};
+
+/// One package release, and either one entry's closure (`entry`: `.`,
+/// `./client`, …) or, with no entry, its file listing. Each is its own
+/// immutable response, so the bundler caches entries independently.
+#[derive(Deserialize)]
+struct PackageQuery {
+    name: String,
+    version: String,
+    #[serde(default)]
+    entry: Option<String>,
+}
 
 pub async fn get_package_data_reply(
     path: String,
     pkg_processor: &CachedPackageProcessor,
 ) -> Result<CustomReply, ServerError> {
-    let (version, decoded_specifier) = decode_req_part(path.as_str())?;
-    let (pkg_name, pkg_version) = parse_package_specifier(&decoded_specifier)?;
+    let (version, decoded_query) = decode_req_part(path.as_str())?;
+    if version != LATEST_VERSION {
+        return Err(ServerError::InvalidCDNVersion);
+    }
+    let query: PackageQuery = serde_json::from_str(&decoded_query)?;
+    // Validates the name and the exact version.
+    let (pkg_name, pkg_version) = parse_package_specifier(&format!("{}@{}", query.name, query.version))?;
     let package_content = pkg_processor.get(&pkg_name, &pkg_version).await?;
-    let mut reply = match version {
-        0..=4 => CustomReply::json(&package_content.0),
-        _ => CustomReply::msgpack(&package_content.0),
-    }?;
+    let module = match &query.entry {
+        Some(entry) => entry_module(&pkg_name, &package_content.0, entry),
+        None => listing(&package_content.0),
+    };
+    let mut reply = CustomReply::msgpack(&module)?;
     let cache_ttl = 365 * 24 * 3600;
     reply.add_header(
         "Cache-Control",

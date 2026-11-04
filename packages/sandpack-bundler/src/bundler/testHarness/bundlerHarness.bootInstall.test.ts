@@ -98,9 +98,13 @@ describe('[harness] live boot installs everything the app imports in one request
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
   });
 
-  it('requests exactly the imported declared packages plus the preset implicits', () => {
-    const [deps, pins] = mockedFetchManifest.mock.calls[0];
-    expect(Object.keys(deps).sort()).toEqual(['core-js', 'react', 'react-error-boundary', 'react-refresh', 'three']);
+  it('requests exactly the declared packages the graph imports, with the entries it imports', () => {
+    const [deps, pins, entries] = mockedFetchManifest.mock.calls[0];
+    // react-refresh/runtime is the harness's local stub and nothing in the graph
+    // imports react-error-boundary: preset implicits are declarations only.
+    expect(Object.keys(deps).sort()).toEqual(['core-js', 'react', 'three']);
+    expect(entries).toMatchObject({ react: ['.'], three: ['.'] });
+    expect(entries!['core-js']).toContain('./stable/array/at');
     // Types, type-only usage and tooling are declared (pinned) but never requested.
     expect(pins).toMatchObject({ '@types/three': '0.160.0', csstype: '^3.1.0', vite: '^7.0.0' });
   });
@@ -112,8 +116,6 @@ describe('[harness] live boot installs everything the app imports in one request
 
   it('compiled the whole graph without installing anything on demand', () => {
     expect([...h.bundler.modules.keys()].some((path) => path.endsWith('/src/scene.ts'))).toBe(true);
-    expect([...h.bundler.moduleRegistry.modules.keys()].sort()).toEqual(
-      ['core-js', 'react', 'react-error-boundary', 'react-refresh', 'three'],
-    );
+    expect([...h.bundler.moduleRegistry.modules.keys()].sort()).toEqual(['core-js', 'react', 'three']);
   });
 });

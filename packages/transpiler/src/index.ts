@@ -57,6 +57,7 @@ export {
   computeDeclaredDepMap,
   computeRequestDepMap,
   packageName,
+  packageEntry,
   importedPackages,
   assertDependenciesResolved,
 } from './depmap';

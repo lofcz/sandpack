@@ -194,7 +194,7 @@ pub fn get_export_entry(exports: &PackageJSONExport) -> Option<String> {
 }
 
 // main fields order: 'exports#.', 'module', 'browser', 'main', 'jsnext:main'
-fn get_main_entry(pkg_json: &PackageJSON) -> String {
+pub fn get_main_entry(pkg_json: &PackageJSON) -> String {
     if let Some(module_export) = pkg_json.module.clone() {
         return module_export;
     }

@@ -45,12 +45,12 @@ pub struct MinimalCachedModule {
     // v: String,
     // files
     #[serde(rename = "f")]
-    files: HashMap<String, MinimalFile>,
+    pub(crate) files: HashMap<String, MinimalFile>,
     // used modules, this is different from dependencies as this only includes a
     // list of node_modules that are used in the code, used for the resolve endpoint
     // to eagerly fetch these modules
     #[serde(rename = "m")]
-    modules: Vec<String>,
+    pub(crate) modules: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -157,7 +157,7 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
   it('resolves live with no lockset, pinning the whole declared map', async () => {
     const r = registry();
     await r.fetchManifest({ ...DECLARED }, { ...DEPS }, undefined);
-    expect(mockedFetchManifest).toHaveBeenCalledWith(DEPS, expect.objectContaining(DECLARED));
+    expect(mockedFetchManifest).toHaveBeenCalledWith(DEPS, expect.objectContaining(DECLARED), {});
   });
 
   it('rejects a lockset with an injected root and resolves live (PT-2)', async () => {

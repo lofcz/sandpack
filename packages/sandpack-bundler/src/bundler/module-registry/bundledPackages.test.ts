@@ -99,14 +99,14 @@ describe('ModuleRegistry bundled-package consumption', () => {
       makeBundler({ index: indexJson([{ n: 'react', v: '18.3.1', path: 'react.msgpack' }]) }),
     );
     const mod = await reg.fetchNodeModule('lodash', '4.17.21'); // not in the index
-    expect(mockedFetchModule).toHaveBeenCalledWith('lodash', '4.17.21');
+    expect(mockedFetchModule).toHaveBeenCalledWith('lodash', '4.17.21', ['.']);
     expect(mod.files['index.js']).toEqual(CDN_MODULE.f['index.js']);
   });
 
   it('falls back to the CDN when there is no bundle index at all', async () => {
     const reg = new ModuleRegistry(makeBundler({})); // readFileAsync throws
     await reg.fetchNodeModule('react', '18.3.1');
-    expect(mockedFetchModule).toHaveBeenCalledWith('react', '18.3.1');
+    expect(mockedFetchModule).toHaveBeenCalledWith('react', '18.3.1', ['.']);
   });
 
   it('falls back to the CDN when a bundled package fails to read/decode', async () => {
@@ -117,6 +117,6 @@ describe('ModuleRegistry bundled-package consumption', () => {
       }),
     );
     await reg.fetchNodeModule('react', '18.3.1');
-    expect(mockedFetchModule).toHaveBeenCalledWith('react', '18.3.1');
+    expect(mockedFetchModule).toHaveBeenCalledWith('react', '18.3.1', ['.']);
   });
 });

@@ -1,15 +1,17 @@
 import { underAppRoot } from '../../fsLayout';
-import { fetchManifest, fetchModule } from '../module-registry/module-cdn';
+import { fetchManifest, fetchModule, fetchModuleEntries } from '../module-registry/module-cdn';
 import { createBundlerHarness, COMPILE_FIXTURE, type BundlerHarness } from './bundlerHarness';
 
 jest.mock('../module-registry/module-cdn', () => ({
   ...jest.requireActual('../module-registry/module-cdn'),
   fetchManifest: jest.fn(),
   fetchModule: jest.fn(),
+  fetchModuleEntries: jest.fn(),
 }));
 
 const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
 const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchModuleEntries = fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>;
 
 // Import-driven installs through the real resolver + `/node_modules` mount: an
 // app import of a declared package the boot install did not cover installs it
@@ -22,10 +24,13 @@ describe('[harness] resolving an app import installs the declared package on dem
     mockedFetchManifest.mockReset();
     mockedFetchModule.mockReset();
     mockedFetchManifest.mockImplementation(async (deps) => Object.keys(deps).map((n) => ({ n, v: '1.0.0', d: 0 })));
+    mockedFetchModuleEntries.mockReset();
+    // The listing with the root entry inlined; `addon.js` is listed only.
     mockedFetchModule.mockImplementation(async (name) => ({
       f: {
         'package.json': { c: JSON.stringify({ name, version: '1.0.0', main: 'index.js' }), d: [], t: true },
         'index.js': { c: 'module.exports = {};', d: [], t: true },
+        'addon.js': 40,
       },
       m: [],
     }));
@@ -75,5 +80,25 @@ describe('[harness] resolving an app import installs the declared package on dem
       h.bundler.resolveAsync('leftpad', '/node_modules/@immediately-run/sdk/dist/render.js'),
     ).resolves.toBe('/node_modules/leftpad/index.js');
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
+  });
+
+  it('expands an installed package when a deep import lands on a file it did not inline', async () => {
+    await h.bundler.resolveAsync('leftpad', app);
+    mockedFetchManifest.mockClear();
+    mockedFetchManifest.mockImplementation(async (deps, _pins, entries) =>
+      Object.keys(deps).map((n) => ({ n, v: '1.0.0', d: 0, e: entries?.[n] })),
+    );
+    mockedFetchModuleEntries.mockResolvedValue({ f: { 'addon.js': { c: 'module.exports = 1;', d: [], t: true } }, m: [] });
+
+    await expect(h.bundler.resolveAsync('leftpad/addon.js', app)).resolves.toBe('/node_modules/leftpad/addon.js');
+    expect(mockedFetchManifest).toHaveBeenCalledWith({ leftpad: '1.0.0' }, expect.anything(), { leftpad: ['./addon.js'] });
+    expect(mockedFetchModuleEntries).toHaveBeenCalledWith('leftpad', '1.0.0', ['./addon.js']);
+    expect(h.bundler.moduleRegistry.modules.get('leftpad')!.files['addon.js']).toEqual({ c: 'module.exports = 1;', d: [], t: true });
+
+    // Inlined now (and the root entry always was): resolving expands nothing.
+    mockedFetchManifest.mockClear();
+    await h.bundler.resolveAsync('leftpad/addon.js', app);
+    await h.bundler.resolveAsync('leftpad', app);
+    expect(mockedFetchManifest).not.toHaveBeenCalled();
   });
 });

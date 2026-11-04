@@ -2,7 +2,7 @@ use node_semver::{Range, Version};
 use parking_lot::Mutex;
 use serde::{self, Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     sync::Arc,
 };
 use tokio::task::JoinHandle;
@@ -16,7 +16,8 @@ use crate::{
     },
 };
 
-use super::cached::CachedPackageProcessor;
+use super::cached::{CachedPackageProcessor, Content};
+use super::entries::{entry_closure, ROOT_ENTRY};
 
 #[derive(Clone, Debug)]
 pub enum VersionRange {
@@ -35,6 +36,9 @@ pub struct DependencyRequest {
     /// Original range/tag string, kept for accurate PackageVersionNotFound messages.
     range_str: String,
     depth: u32,
+    /// The package entries the importer loads (`.`, `./client`, …); only
+    /// their closures are followed (`entries::entry_closure`).
+    entries: BTreeSet<String>,
 }
 
 impl DependencyRequest {
@@ -56,7 +60,17 @@ impl DependencyRequest {
             version_range,
             range_str: String::from(version_range_str),
             depth,
+            entries: BTreeSet::from([String::from(ROOT_ENTRY)]),
         })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn with_entries(mut self, entries: BTreeSet<String>) -> Self {
+        self.entries = entries;
+        self
     }
 
     pub fn resolve_version(&self, manifest: &MinimalPackageData) -> Option<String> {
@@ -112,6 +126,10 @@ pub struct Dependency {
     /// then the install name). Older bundlers ignore it.
     #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+    /// The entries the tree loads from this package: the bundler fetches each
+    /// one's closure (`/package` with that entry).
+    #[serde(rename = "e", default)]
+    entries: Vec<String>,
 }
 
 impl Dependency {
@@ -122,6 +140,7 @@ impl Dependency {
             version,
             depth,
             source,
+            entries: vec![],
         }
     }
 }
@@ -165,14 +184,13 @@ pub fn process_dep_map(
     Ok(deps)
 }
 
-type ResolveDepResult = Result<(Dependency, Vec<DependencyRequest>), ServerError>;
-
+/// Resolve a request to an exact release and load its processed package.
 #[tracing::instrument(name = "resolve_dep", skip(pkg_processor, npm_db))]
 async fn resolve_dep(
-    req: DependencyRequest,
+    req: &DependencyRequest,
     npm_db: &NpmDatabase,
     pkg_processor: &CachedPackageProcessor,
-) -> ResolveDepResult {
+) -> Result<(String, Content), ServerError> {
     // Tags and ranges follow npm (a day-old `latest` is refreshed); an exact
     // version only re-downloads the manifest when it is missing from the copy.
     match req.version_range {
@@ -191,41 +209,61 @@ async fn resolve_dep(
     }
     let Some(resolved_version) = resolved else {
         return Err(ServerError::PackageVersionNotFound(
-            req.name,
-            req.range_str,
+            req.name.clone(),
+            req.range_str.clone(),
         ));
     };
+    let content = pkg_processor.get(req.source.as_str(), resolved_version.as_str()).await?;
+    Ok((resolved_version, content))
+}
 
-    let dependencies = pkg_processor
-        .get(req.source.as_str(), resolved_version.as_str())
-        .await?;
-    let mut transient_deps: Vec<DependencyRequest> = Vec::with_capacity(dependencies.1.len());
-    for (dep_name, dep_meta) in dependencies.1.iter() {
-        if dep_meta.is_used {
-            let dep_req_res = DependencyRequest::new(
-                dep_name.as_str(),
-                dep_meta.version.as_str(),
-                req.depth + 1,
-            );
-            if let Ok(dep_req) = dep_req_res {
-                transient_deps.push(dep_req);
-            }
+/// The requests the closure of `entries` makes: every package its files
+/// import, at the range the package declares (`latest` for undeclared
+/// imports), with the entries imported. A self-import adds entries to the
+/// package itself, at its resolved release.
+fn closure_requests(
+    name: &str,
+    source: &str,
+    version: &str,
+    content: &Content,
+    entries: &BTreeSet<String>,
+    depth: u32,
+) -> Vec<DependencyRequest> {
+    let closure = entry_closure(source, &content.0, entries.iter());
+    let mut requests = Vec::with_capacity(closure.packages.len());
+    for (package, package_entries) in closure.packages {
+        let request = if package == source {
+            let range = if source == name { version.to_string() } else { format!("npm:{source}@{version}") };
+            DependencyRequest::new(name, &range, depth)
+        } else {
+            let range = content.1.get(&package).map(|dep| dep.version.as_str()).unwrap_or("latest");
+            DependencyRequest::new(&package, range, depth + 1)
+        };
+        match request {
+            Ok(request) => requests.push(request.with_entries(package_entries)),
+            Err(err) => warn!("Skipping import of {} from {}: {:?}", package, source, err),
         }
     }
+    requests
+}
 
-    Ok((
-        Dependency::new(req.name, resolved_version, req.depth, req.source),
-        transient_deps,
-    ))
+/// Per-name collection state. The tree is flat: the first request for a name
+/// fixes its release; later requests may only add entries, whose closures
+/// are expanded against that release.
+#[derive(Debug, Default)]
+struct NameState {
+    /// `(version, source)` once resolved.
+    resolved: Option<(String, String)>,
+    /// Every entry requested so far.
+    entries: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
 struct DepTreeCollector {
     npm_db: NpmDatabase,
     dependencies: Arc<Mutex<DependencyList>>,
+    states: Arc<Mutex<HashMap<String, NameState>>>,
     futures: Arc<Mutex<VecDeque<JoinHandle<()>>>>,
-    in_progress: Arc<Mutex<Vec<DependencyRequest>>>,
-    /// First resolution error wins; surfaced after all spawned work joins.
     first_error: Arc<Mutex<Option<ServerError>>>,
     pkg_processor: CachedPackageProcessor,
     pins: Arc<Pins>,
@@ -238,25 +276,22 @@ impl DepTreeCollector {
             pkg_processor,
             pins: Arc::new(pins),
             dependencies: Arc::new(Mutex::new(Vec::new())),
+            states: Arc::new(Mutex::new(HashMap::new())),
             futures: Arc::new(Mutex::new(VecDeque::new())),
-            in_progress: Arc::new(Mutex::new(Vec::new())),
             first_error: Arc::new(Mutex::new(None)),
         }
     }
 
+    /// The resolved tree, each package with every entry requested from it.
     fn get_dependencies(&self) -> DependencyList {
-        self.dependencies.lock().clone()
-    }
-
-    fn add_dependency(&self, dep: Dependency) {
-        if !self
-            .dependencies
-            .lock()
-            .iter()
-            .any(|d| d.name.eq(&dep.name))
-        {
-            self.dependencies.lock().push(dep);
+        let states = self.states.lock();
+        let mut dependencies = self.dependencies.lock().clone();
+        for dependency in dependencies.iter_mut() {
+            if let Some(state) = states.get(&dependency.name) {
+                dependency.entries = state.entries.iter().cloned().collect();
+            }
         }
+        dependencies
     }
 
     fn record_error(&self, err: ServerError) {
@@ -266,85 +301,92 @@ impl DepTreeCollector {
         }
     }
 
-    fn add_future(&self, dep_req: DependencyRequest) {
-        let dep_collector = self.clone();
-        let pkg_processor = self.pkg_processor.clone();
-        let future = tokio::spawn(async move {
-            let npm_db = dep_collector.npm_db.clone();
-            match resolve_dep(dep_req, &npm_db, &pkg_processor).await {
-                Ok((dependency, transient_deps)) => {
-                    dep_collector.add_dependency(dependency);
-                    dep_collector.add_dep_requests(transient_deps);
-                }
-                Err(err) => {
-                    dep_collector.record_error(err);
-                }
-            }
-        });
-        self.futures.lock().push_back(future);
-    }
-
-    fn has_dep_request(&self, dep_request: DependencyRequest) -> bool {
-        if self
-            .dependencies
-            .lock()
-            .iter()
-            .any(|d| d.name.eq(&dep_request.name))
-        {
+    fn should_skip(&self, request: &DependencyRequest, known: usize) -> bool {
+        if request.name.as_str().starts_with("@types/") {
             return true;
         }
-
-        if self
-            .in_progress
-            .lock()
-            .iter()
-            .any(|d| d.name.eq(&dep_request.name))
-        {
+        if !super::npm_specifier::is_valid_package_name(request.name.as_str()) {
+            warn!("Skipping non-npm dependency specifier {:?}", request.name);
             return true;
         }
-
-        false
-    }
-
-    fn total_dep_count(&self) -> u64 {
-        (self.dependencies.lock().len() + self.in_progress.lock().len()) as u64
-    }
-
-    fn should_skip_dep_request(&self, dep_request: DependencyRequest) -> bool {
-        // Skip packages that start with @types/ as they don't contain any useful code, just typings...
-        if dep_request.name.as_str().starts_with("@types/") {
-            return true;
-        }
-
-        // Stale cache / bad edges: only well-formed package names are resolvable.
-        if !super::npm_specifier::is_valid_package_name(dep_request.name.as_str()) {
-            warn!(
-                "Skipping non-npm dependency specifier {:?}",
-                dep_request.name
-            );
-            return true;
-        }
-
-        // Add a limit to the total amount of deps
-        if self.total_dep_count() > 500 {
-            return true;
-        }
-
-        self.has_dep_request(dep_request)
-    }
-
-    fn add_dep_request(&self, dep_request: DependencyRequest) {
-        self.in_progress.lock().push(dep_request);
+        known > 500
     }
 
     fn add_dep_requests(&self, dep_requests: Vec<DependencyRequest>) {
-        for dep_req in dep_requests {
-            let dep_req = apply_pin(&self.pins, dep_req);
-            if !self.should_skip_dep_request(dep_req.clone()) {
-                self.add_future(dep_req.clone());
-                self.add_dep_request(dep_req.clone());
+        for request in dep_requests {
+            let request = apply_pin(&self.pins, request);
+            let mut states = self.states.lock();
+            if let Some(state) = states.get_mut(&request.name) {
+                let added: BTreeSet<String> = request.entries.difference(&state.entries).cloned().collect();
+                if added.is_empty() {
+                    continue;
+                }
+                state.entries.extend(added.iter().cloned());
+                // Still resolving: the resolution expands every entry it finds
+                // recorded when it completes.
+                if let Some((version, source)) = state.resolved.clone() {
+                    drop(states);
+                    self.spawn_expand(request.name, source, version, added, request.depth);
+                }
+                continue;
             }
+            if self.should_skip(&request, states.len()) {
+                continue;
+            }
+            states.insert(
+                request.name.clone(),
+                NameState { resolved: None, entries: request.entries.clone() },
+            );
+            drop(states);
+            self.spawn_resolve(request);
         }
+    }
+
+    fn spawn(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.futures.lock().push_back(tokio::spawn(task));
+    }
+
+    fn spawn_resolve(&self, request: DependencyRequest) {
+        let collector = self.clone();
+        self.spawn(async move {
+            match resolve_dep(&request, &collector.npm_db, &collector.pkg_processor).await {
+                Ok((version, content)) => {
+                    let entries = {
+                        let mut states = collector.states.lock();
+                        let state = states.entry(request.name.clone()).or_default();
+                        state.resolved = Some((version.clone(), request.source.clone()));
+                        state.entries.clone()
+                    };
+                    collector.dependencies.lock().push(Dependency::new(
+                        request.name.clone(),
+                        version.clone(),
+                        request.depth,
+                        request.source.clone(),
+                    ));
+                    collector.add_dep_requests(closure_requests(
+                        &request.name,
+                        &request.source,
+                        &version,
+                        &content,
+                        &entries,
+                        request.depth,
+                    ));
+                }
+                Err(err) => collector.record_error(err),
+            }
+        });
+    }
+
+    fn spawn_expand(&self, name: String, source: String, version: String, entries: BTreeSet<String>, depth: u32) {
+        let collector = self.clone();
+        self.spawn(async move {
+            match collector.pkg_processor.get(&source, &version).await {
+                Ok(content) => collector.add_dep_requests(closure_requests(
+                    &name, &source, &version, &content, &entries, depth,
+                )),
+                Err(err) => collector.record_error(err),
+            }
+        });
     }
 
     fn get_next_join(&self) -> Option<JoinHandle<()>> {
@@ -375,11 +417,12 @@ impl DepTreeCollector {
 }
 
 /// A request for a pinned name takes the pin's range (and alias source), keeping
-/// its own depth.
+/// its own depth and entries.
 fn apply_pin(pins: &Pins, request: DependencyRequest) -> DependencyRequest {
     match pins.get(&request.name) {
         Some(pin) => DependencyRequest {
             depth: request.depth,
+            entries: request.entries,
             ..pin.clone()
         },
         None => request,
@@ -491,9 +534,9 @@ mod tests {
     #[test]
     fn dependency_names_its_source_only_for_aliases() {
         let plain = serde_json::to_value(Dependency::new("react".into(), "19.0.0".into(), 0, "react".into())).unwrap();
-        assert_eq!(plain, serde_json::json!({ "n": "react", "v": "19.0.0", "d": 0 }));
+        assert_eq!(plain, serde_json::json!({ "n": "react", "v": "19.0.0", "d": 0, "e": [] }));
         let alias = serde_json::to_value(Dependency::new("react".into(), "10.26.0".into(), 0, "preact".into())).unwrap();
-        assert_eq!(alias, serde_json::json!({ "n": "react", "v": "10.26.0", "d": 0, "s": "preact" }));
+        assert_eq!(alias, serde_json::json!({ "n": "react", "v": "10.26.0", "d": 0, "s": "preact", "e": [] }));
     }
 
     #[test]

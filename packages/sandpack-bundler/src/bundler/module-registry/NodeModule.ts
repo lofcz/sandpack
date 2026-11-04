@@ -19,6 +19,11 @@ export class NodeModule {
    * whose resolved version could not be determined).
    */
   release: NpmRelease | null;
+  /**
+   * Entries (`.`, `./client`, …) whose closures are inlined in `files`; any
+   * other file is listed only and fetched raw when read.
+   */
+  entries: Set<string> = new Set();
 
   constructor(name: string, version: string, files: Record<string, CDNModuleFileType>, modules: string[], release: NpmRelease | null) {
     this.name = name;

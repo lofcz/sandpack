@@ -3,7 +3,7 @@ import { decode } from "@msgpack/msgpack";
 import { retryFetch } from "./fetch";
 
 const CDN_ROOT: string = process.env.CDN_ROOT || "http://localhost:8080";
-const CDN_VERSION = 6;
+const CDN_VERSION = 7;
 
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -25,13 +25,16 @@ export interface IResolvedDependency {
   v: string;
   // depth
   d: number;
+  // entries the tree loads from this package
+  e: string[];
 }
 
 export async function fetchManifest(
   deps: DepMap,
-  pins: DepMap = {}
+  pins: DepMap = {},
+  entries: Record<string, string[]> = {}
 ): Promise<IResolvedDependency[]> {
-  const encoded_manifest = encodePayload(JSON.stringify({ deps, pins }));
+  const encoded_manifest = encodePayload(JSON.stringify({ deps, pins, entries }));
   const result = await retryFetch(
     urlJoin(CDN_ROOT, `/dep_tree/${encoded_manifest}`),
     {
@@ -60,12 +63,13 @@ export interface ICDNModule {
   m: string[];
 }
 
+/** One entry's closure (`.`, `./client`, …), or with `entry: null` the listing. */
 export async function fetchModule(
   name: string,
-  version: string
+  version: string,
+  entry: string | null = "."
 ): Promise<ICDNModule> {
-  const specifier = `${name}@${version}`;
-  const encoded_specifier = encodePayload(specifier);
+  const encoded_specifier = encodePayload(JSON.stringify({ name, version, entry }));
   const result = await retryFetch(
     urlJoin(CDN_ROOT, `/package/${encoded_specifier}`),
     { maxRetries: 5 }

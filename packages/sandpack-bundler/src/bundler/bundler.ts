@@ -9,7 +9,7 @@ import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
-import { computeRequestDepMap, importedPackages, isTransformable, packageName } from '@lofcz/transpiler';
+import { computeRequestDepMap, importedPackages, isTransformable, packageEntry, packageName } from '@lofcz/transpiler';
 import { cssModuleSpecifiers } from '@lofcz/transpiler/css';
 import { ModuleNotFoundError } from '../errors/ModuleNotFound';
 import { ArtifactStore } from './artifacts/artifactStore';
@@ -135,6 +135,8 @@ const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
   }
 
 const DEFAULT_EXTENSIONS = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'];
+const SCRIPT_RE = /\.[cm]?[jt]sx?$/;
+const hasOwnKey = (map: object, key: string): boolean => Object.prototype.hasOwnProperty.call(map, key);
 
 export class Bundler {
   private lastHTML: string | null = null;
@@ -503,26 +505,32 @@ export class Bundler {
     // Without a dependencies field there is nothing to version an install.
     if (!this.parsedPackageJSON?.dependencies) return;
     const declared = this.declaredDependencies();
-    const implicit = Object.keys(this.requirePreset().augmentDependencies({}));
-    const request = computeRequestDepMap(
-      declared,
-      importedPackages([...this.artifactStore.recordedSpecifiers(), ...(await this.scanEntryImports())]),
-      implicit,
-    );
+    const specifiers = [...this.artifactStore.recordedSpecifiers(), ...(await this.scanEntryImports())];
+    // The preset's implicit deps are declarations only: the scan covers the
+    // runtime code that imports them, with the entries it imports.
+    const request = computeRequestDepMap(declared, importedPackages(specifiers), []);
+    const entries: Record<string, string[]> = {};
+    for (const specifier of specifiers) {
+      const name = packageName(specifier);
+      const entry = packageEntry(specifier);
+      if (!name || !entry || !hasOwnKey(request, name)) continue;
+      (entries[name] ??= []).includes(entry) || entries[name].push(entry);
+    }
 
-    await this.moduleRegistry.fetchManifest(declared, request, await this.readSidecarLockset());
+    await this.moduleRegistry.fetchManifest(declared, request, await this.readSidecarLockset(), entries);
 
     // Load all modules
     await this.moduleRegistry.preloadModules();
     await this.moduleRegistry.loadModuleDependencies();
-    // The scan above looked these packages up before they existed.
-    this.forgetMissingNodeModules();
   }
 
   /**
-   * The package imports of the local module graph, scanned from the roots
-   * compile starts at: the render entry and the side-effect imports of the
-   * `src/main` shim (`collectLocalEntrySideEffects`, as compile applies them).
+   * The package imports of the module graph, scanned from the roots compile
+   * starts at: the runtimes, the render entry and the side-effect imports of
+   * the `src/main` shim (`collectLocalEntrySideEffects`, as compile applies
+   * them). Bundler-owned modules under `/node_modules` (runtimes, the HMR
+   * helper, the self-hosted SDK) are part of the graph: their imports install
+   * like the app's.
    */
   private async scanEntryImports(): Promise<string[]> {
     const resolveLocal = (specifier: string, from: string) => this.resolveInstalled(specifier, from, DEFAULT_EXTENSIONS);
@@ -535,11 +543,17 @@ export class Bundler {
     }
     const { sideEffectModules } = await collectLocalEntrySideEffects({ entryPoint, resolve: resolveLocal, readFile });
     return scanLocalImports({
-      entries: [entryPoint, ...sideEffectModules],
+      entries: [...this.runtimes, entryPoint, ...sideEffectModules],
       appRoot: APP_ROOT,
+      alsoLocal: (path) => this.isBundlerOwned(path),
       moduleSpecifiers: (path) => this.scanModuleSpecifiers(path),
       resolveLocal,
     });
+  }
+
+  /** A `/node_modules` module the bundler supplies itself (not a CDN package). */
+  private isBundlerOwned(path: string): boolean {
+    return path.startsWith('/node_modules/') && !this.inCdnPackage(path);
   }
 
   /**
@@ -552,7 +566,7 @@ export class Bundler {
   private async scanModuleSpecifiers(path: string): Promise<string[]> {
     const source = await this.fs.readFileAsync(path);
     if (path.endsWith('.css')) return cssModuleSpecifiers(source);
-    if (!isTransformable(path)) return [];
+    if (!isTransformable(path) && !(this.isBundlerOwned(path) && SCRIPT_RE.test(path))) return [];
     const result = await new Module(path, source, false, this).transpile();
     this.bootTranspiles.set(path, { source, result });
     return result.dependencies;
@@ -609,7 +623,7 @@ export class Bundler {
   }
 
   /** Drop cached absences under `/node_modules` after an install. */
-  private forgetMissingNodeModules(): void {
+  forgetMissingNodeModules(): void {
     for (const [path, content] of this.resolverCache) {
       if (content === false && path.includes('/node_modules/')) this.resolverCache.delete(path);
     }
@@ -632,20 +646,41 @@ export class Bundler {
       }
     }
     try {
-      return await this.resolveInstalled(specifier, filename, extensions);
+      return await this.inlined(await this.resolveInstalled(specifier, filename, extensions));
     } catch (err) {
       const name = this.installableImport(specifier, filename, err);
       if (!name) throw err;
-      await this.moduleRegistry.ensurePackages([name]);
+      await this.moduleRegistry.ensureEntries(name, [packageEntry(specifier) ?? '.']);
       this.forgetMissingNodeModules();
-      return this.resolveInstalled(specifier, filename, extensions);
+      return this.inlined(await this.resolveInstalled(specifier, filename, extensions));
     }
   }
 
-  private async resolveInstalled(
+  /**
+   * A resolution that lands on a file of a CDN package that is listed but not
+   * inlined — a deep import added after install, or a file the CDN's entry
+   * resolution did not predict — expands the package with that file as an
+   * entry, so its closure and the packages it imports load first.
+   */
+  private async inlined(path: string): Promise<string> {
+    const at = path.lastIndexOf('/node_modules/');
+    if (at < 0 || !SCRIPT_RE.test(path)) return path;
+    const rest = path.slice(at + '/node_modules/'.length);
+    const name = packageName(rest);
+    const nodeModule = name ? this.moduleRegistry.modules.get(name) : undefined;
+    if (!name || !nodeModule) return path;
+    const file = rest.slice(name.length + 1);
+    if (typeof nodeModule.files[file] !== 'number') return path;
+    await this.moduleRegistry.ensureEntries(name, [`./${file}`]);
+    this.forgetMissingNodeModules();
+    return path;
+  }
+
+  /** Resolve without installing or expanding anything. */
+  async resolveInstalled(
     specifier: string,
     filename: string,
-    extensions: string[]
+    extensions: string[] = DEFAULT_EXTENSIONS
   ): Promise<string> {
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node

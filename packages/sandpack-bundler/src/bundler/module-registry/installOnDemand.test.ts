@@ -6,20 +6,24 @@
  * batched into one /dep_tree request that pins everything already installed.
  */
 import { ModuleRegistry } from './index';
-import { fetchManifest, fetchModule } from './module-cdn';
+import { fetchManifest, fetchModule, fetchModuleEntries } from './module-cdn';
 
 jest.mock('./module-cdn', () => ({
-  CDN_VERSION: 6,
+  CDN_VERSION: 7,
   fetchManifest: jest.fn(),
   fetchModule: jest.fn(),
+  fetchModuleEntries: jest.fn(),
+  mergeModuleParts: jest.requireActual('./module-cdn').mergeModuleParts,
 }));
 
 const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
 const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchModuleEntries = fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>;
 
 function stubBundler(): any {
   return {
     modules: new Map(),
+    forgetMissingNodeModules: jest.fn(),
     fs: { readFileAsync: jest.fn(), readBytesAsync: jest.fn() },
   };
 }
@@ -81,7 +85,45 @@ describe('ModuleRegistry.ensurePackages', () => {
     registry.setDeclared({ ...DECLARED, zod: '^3.22.0' });
     await Promise.resolve();
     await registry.ensurePackages(['zod']);
-    expect(mockedFetchManifest).toHaveBeenLastCalledWith({ zod: '^3.22.0' }, expect.objectContaining({ zod: '^3.22.0' }));
+    expect(mockedFetchManifest).toHaveBeenLastCalledWith(
+      { zod: '^3.22.0' },
+      expect.objectContaining({ zod: '^3.22.0' }),
+      { zod: ['.'] },
+    );
     expect(registry.modules.has('zod')).toBe(true);
+  });
+
+  it('expands an installed package with a deep entry at its installed release, with the entry\'s packages', async () => {
+    await registry.ensureEntries('three', ['.']);
+    const three = registry.modules.get('three')!;
+    expect([...three.entries]).toEqual(['.']);
+    mockedFetchManifest.mockClear();
+    mockedFetchModule.mockClear();
+    // The addon's closure imports `zod` (declared, not installed yet).
+    mockedFetchManifest.mockResolvedValueOnce([
+      { n: 'three', v: '0.160.1', d: 0, e: ['./addons/x.js'] },
+      { n: 'zod', v: '3.23.8', d: 1, e: ['.'] },
+    ]);
+    mockedFetchModuleEntries.mockResolvedValueOnce({
+      f: { 'examples/jsm/x.js': { c: 'x', d: ['zod'], t: true } },
+      m: ['zod'],
+    });
+
+    await registry.ensureEntries('three', ['./addons/x.js']);
+
+    const [deps, , entries] = mockedFetchManifest.mock.calls[0];
+    expect(deps).toEqual({ three: '0.160.1' });
+    expect(entries).toEqual({ three: ['./addons/x.js'] });
+    expect(mockedFetchModuleEntries).toHaveBeenCalledWith('three', '0.160.1', ['./addons/x.js']);
+    expect(mockedFetchModule).toHaveBeenCalledWith('zod', '3.23.8', ['.']);
+    expect(mockedFetchModule).not.toHaveBeenCalledWith('three', expect.anything(), expect.anything());
+    expect(three.files['examples/jsm/x.js']).toEqual({ c: 'x', d: ['zod'], t: true });
+    expect([...three.entries].sort()).toEqual(['.', './addons/x.js']);
+    expect(registry.modules.has('zod')).toBe(true);
+
+    // Already expanded: nothing more is requested.
+    mockedFetchManifest.mockClear();
+    await registry.ensureEntries('three', ['./addons/x.js']);
+    expect(mockedFetchManifest).not.toHaveBeenCalled();
   });
 });

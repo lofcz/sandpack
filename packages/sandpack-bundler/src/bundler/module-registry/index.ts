@@ -1,4 +1,4 @@
-import { assertDependenciesResolved, transformFile } from '@lofcz/transpiler';
+import { assertDependenciesResolved, packageEntry, packageName, transformFile } from '@lofcz/transpiler';
 
 import * as logger from '../../utils/logger';
 import { sortObj } from '../../utils/object';
@@ -6,7 +6,7 @@ import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { scanCjsModule } from '../transforms/raw-cjs/scan';
 import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
-import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
+import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule, fetchModuleEntries, mergeModuleParts } from './module-cdn';
 import {
   bundledIndexPath,
   bundledPackagePath,
@@ -57,6 +57,18 @@ const INSTALL_BATCH_WINDOW_MS = 10;
 
 const hasOwn = (deps: DepMap, name: string): boolean => Object.prototype.hasOwnProperty.call(deps, name);
 
+// The entry an install defaults to: the package root.
+const ROOT_ENTRY = '.';
+
+// Package name → the entries (`.`, `./client`, …) to install from it.
+type Imports = Map<string, Set<string>>;
+
+const addImport = (imports: Imports, name: string, entry: string): void => {
+  let entries = imports.get(name);
+  if (!entries) imports.set(name, (entries = new Set()));
+  entries.add(entry);
+};
+
 export class ModuleRegistry {
   modules: Map<string, NodeModule> = new Map();
   moduleDownloadPromises: Map<string, Promise<NodeModule>> = new Map();
@@ -69,11 +81,14 @@ export class ModuleRegistry {
   // /dep_tree pins. Only declared packages are ever requested.
   private declared: DepMap = {};
 
-  // On-demand installs (`ensurePackages`): the per-name install promise, the
-  // names collected for the next batch, and the chain that runs batches one at
-  // a time so each one pins everything the previous ones installed.
+  // On-demand installs (`ensureEntries`): the install promise per
+  // `name\0entry`, the imports collected for the next batch, and the chain that
+  // runs batches one at a time so each one pins everything the previous ones
+  // installed.
   private installs: Map<string, Promise<void>> = new Map();
-  private nextBatch: { names: Set<string>; done: Promise<void> } | null = null;
+  private nextBatch: { imports: Imports; done: Promise<void> } | null = null;
+  // In-flight entry expansions of installed packages, per `name\0entry`.
+  private expansions: Map<string, Promise<void>> = new Map();
   private installChain: Promise<void> = Promise.resolve();
   // Batches queued or running; while any is, a package may be visible before
   // its dependency closure is (`whenIdle`).
@@ -137,10 +152,16 @@ export class ModuleRegistry {
 
   /**
    * Resolve the boot install: `request` (the declared packages the app is known
-   * to import, `computeRequestDepMap`) against `declared`. Anything imported
-   * later installs through `ensurePackages`.
+   * to import, `computeRequestDepMap`) against `declared`, loading `entries`
+   * from each (`.` when absent). Anything imported later installs through
+   * `ensureEntries`.
    */
-  async fetchManifest(declared: DepMap, request: DepMap, lockset?: LocksetSection): Promise<void> {
+  async fetchManifest(
+    declared: DepMap,
+    request: DepMap,
+    lockset?: LocksetSection,
+    entries: Record<string, string[]> = {},
+  ): Promise<void> {
     this.declared = sortObj(declared);
     let requested = sortObj(request);
 
@@ -174,8 +195,9 @@ export class ModuleRegistry {
     }
 
     if (!resolvedFromLockset) {
-      logger.debug('Fetching manifest', requested);
-      this.manifest = await fetchManifest(requested, this.pins());
+      logger.debug('Fetching manifest', requested, entries);
+      const requestedEntries = Object.fromEntries(Object.entries(entries).filter(([name]) => hasOwn(requested, name)));
+      this.manifest = await fetchManifest(requested, this.pins(), requestedEntries);
       logger.debug('fetched manifest', this.manifest);
     }
 
@@ -209,25 +231,35 @@ export class ModuleRegistry {
   setDeclared(declared: DepMap): void {
     this.declared = sortObj(declared);
     // A failed install may succeed against the edited range.
-    for (const [name, install] of this.installs) {
-      install.catch(() => this.installs.delete(name));
+    for (const [key, install] of this.installs) {
+      install.catch(() => this.installs.delete(key));
     }
   }
 
-  /**
-   * Install declared packages the app imports that the boot install did not
-   * cover (lazy routes, edits, imports a lockset's scan could not see). Imports
-   * discovered within `INSTALL_BATCH_WINDOW_MS` share one /dep_tree request;
-   * undeclared or already-installed names are ignored.
-   */
+  /** Install the root entry of each declared package that is not installed. */
   ensurePackages(names: Iterable<string>): Promise<void> {
+    return Promise.all([...names].map((name) => this.ensureEntries(name, [ROOT_ENTRY]))).then(() => undefined);
+  }
+
+  /**
+   * Make `entries` of package `name` loadable with their dependency closures:
+   * install a declared package that isn't installed, or expand an installed
+   * one with entries it does not have yet (a deep import added later, or a
+   * file the CDN did not inline). Requests made within
+   * `INSTALL_BATCH_WINDOW_MS` share one /dep_tree request; an undeclared
+   * package that is not installed is ignored.
+   */
+  ensureEntries(name: string, entries: Iterable<string>): Promise<void> {
+    const installed = this.modules.get(name);
+    if (!installed && !this.isDeclared(name)) return Promise.resolve();
     const waits: Promise<void>[] = [];
-    for (const name of names) {
-      if (this.modules.has(name) || !this.isDeclared(name)) continue;
-      let install = this.installs.get(name);
+    for (const entry of entries) {
+      if (installed?.entries.has(entry)) continue;
+      const key = `${name}\0${entry}`;
+      let install = this.installs.get(key);
       if (!install) {
-        install = this.enqueueInstall(name);
-        this.installs.set(name, install);
+        install = this.enqueueInstall(name, entry);
+        this.installs.set(key, install);
       }
       waits.push(install);
     }
@@ -245,39 +277,46 @@ export class ModuleRegistry {
     return current.catch(() => undefined).then(() => this.whenIdle() ?? undefined);
   }
 
-  private enqueueInstall(name: string): Promise<void> {
+  private enqueueInstall(name: string, entry: string): Promise<void> {
     if (!this.nextBatch) {
-      const names = new Set<string>();
+      const imports: Imports = new Map();
       this.pendingBatches++;
       const done = new Promise<void>((resolve) => setTimeout(resolve, INSTALL_BATCH_WINDOW_MS)).then(() => {
         this.nextBatch = null;
         const run = this.installChain
           .catch(() => undefined)
-          .then(() => this.installBatch(names))
+          .then(() => this.installBatch(imports))
           .finally(() => this.pendingBatches--);
         this.installChain = run;
         return run;
       });
-      this.nextBatch = { names, done };
+      this.nextBatch = { imports, done };
     }
-    this.nextBatch.names.add(name);
+    addImport(this.nextBatch.imports, name, entry);
     return this.nextBatch.done;
   }
 
   /**
    * Install one batch, all or nothing: a failure (CDN drop, download error)
    * leaves no trace — no manifest entry, fallback, module or cached file — so a
-   * retry, e.g. against a corrected range, starts clean.
+   * retry, e.g. against a corrected range, starts clean. Installed packages in
+   * the batch are requested at their installed release, for the entries they
+   * lack; their closures' transitive packages install alongside.
    */
-  private async installBatch(names: Set<string>): Promise<void> {
+  private async installBatch(imports: Imports): Promise<void> {
     const request: DepMap = {};
-    for (const name of names) {
-      if (!this.modules.has(name)) request[name] = this.declared[name];
+    const entries: Record<string, string[]> = {};
+    for (const [name, wanted] of imports) {
+      const installed = this.modules.get(name);
+      const missing = [...wanted].filter((entry) => !installed?.entries.has(entry));
+      if (missing.length === 0) continue;
+      request[name] = installed ? this.pinOf(name, installed) ?? installed.version : this.declared[name];
+      entries[name] = missing;
     }
     if (Object.keys(request).length === 0) return;
 
-    logger.debug('Installing imported packages', request);
-    const resolved = await fetchManifest(sortObj(request), this.pins());
+    logger.debug('Installing imported packages', request, entries);
+    const resolved = await fetchManifest(sortObj(request), this.pins(), entries);
     const manifestBefore = this.manifest;
     const fallbacksBefore = new Map(this.esmFallbacks);
     const modulesBefore = new Set(this.modules.keys());
@@ -286,7 +325,9 @@ export class ModuleRegistry {
     try {
       this.registerEsmFallbacks(request);
       assertDependenciesResolved(request, this.manifest);
-      await this.preloadModules();
+      const fallbacks = this.manifest.filter((dep) => this.esmFallbacks.has(dep.n) && !fallbacksBefore.has(dep.n));
+      await Promise.all([...resolved, ...fallbacks].map((dep) => this.installEntries(dep)));
+      await this.fetchUsedModuleClosure();
       await this.loadModuleDependencies();
     } catch (err) {
       for (const download of this.moduleDownloadPromises.values()) this.cancelledDownloads.add(download);
@@ -301,6 +342,13 @@ export class ModuleRegistry {
     }
   }
 
+  /** The exact /dep_tree range of an installed package's release. */
+  private pinOf(name: string, nodeModule: NodeModule): string | null {
+    const release = nodeModule.release;
+    if (!release || this.esmFallbacks.has(name)) return null;
+    return release.name === name ? release.version : `npm:${release.name}@${release.version}`;
+  }
+
   /**
    * /dep_tree pins: the declared ranges, overridden by the exact release of
    * every installed package — the flat tree holds one version per name.
@@ -308,9 +356,8 @@ export class ModuleRegistry {
   private pins(): DepMap {
     const pins: DepMap = { ...this.declared };
     for (const [name, nodeModule] of this.modules) {
-      const release = nodeModule.release;
-      if (!release || this.esmFallbacks.has(name)) continue;
-      pins[name] = release.name === name ? release.version : `npm:${release.name}@${release.version}`;
+      const pin = this.pinOf(name, nodeModule);
+      if (pin) pins[name] = pin;
     }
     return pins;
   }
@@ -330,11 +377,7 @@ export class ModuleRegistry {
   }
 
   async preloadModules(): Promise<void> {
-    await Promise.all(
-      this.manifest.map((dep) => {
-        return this.fetchNodeModule(dep.n, dep.v, dep.s);
-      })
-    );
+    await Promise.all(this.manifest.map((dep) => this.installEntries(dep)));
     // Close over CDN-reported used modules (`ICDNModule.m`) that `/dep_tree`
     // omitted. Flat Sandpack installs only what dep_tree returns; some CDNs
     // (e.g. transforms that inject `@swc/helpers`) list those edges on the
@@ -345,13 +388,23 @@ export class ModuleRegistry {
 
   /**
    * BFS-fetch packages named in each loaded module's `m` list until the set is
-   * closed. Versions come from a fresh `/dep_tree` of `{ name: "latest" }`.
+   * closed. Versions come from a fresh `/dep_tree` of `{ name: "latest" }`; the
+   * entries are the subpaths the inlined files import (`.` when none is seen).
    */
   private async fetchUsedModuleClosure(): Promise<void> {
     const attempted = new Set<string>();
     for (;;) {
       const missing: DepMap = {};
+      const wanted: Imports = new Map();
       for (const nodeModule of this.modules.values()) {
+        for (const file of Object.values(nodeModule.files)) {
+          if (typeof file !== 'object') continue;
+          for (const dep of file.d) {
+            const name = packageName(dep);
+            const entry = packageEntry(dep);
+            if (name && entry && name !== nodeModule.name) addImport(wanted, name, entry);
+          }
+        }
         for (const used of nodeModule.modules) {
           if (!used || used.startsWith('.') || used.startsWith('/')) continue;
           if (this.modules.has(used) || missing[used] || attempted.has(used)) continue;
@@ -362,10 +415,11 @@ export class ModuleRegistry {
       if (names.length === 0) return;
 
       for (const name of names) attempted.add(name);
-      logger.debug('Fetching used-module closure omitted by dep_tree', missing);
+      const entries = Object.fromEntries(names.map((name) => [name, [...(wanted.get(name) ?? [ROOT_ENTRY])]]));
+      logger.debug('Fetching used-module closure omitted by dep_tree', missing, entries);
       let extra: IResolvedDependency[];
       try {
-        extra = await fetchManifest(missing, this.pins());
+        extra = await fetchManifest(missing, this.pins(), entries);
       } catch (err) {
         logger.warn('used-module closure dep_tree failed; continuing without', missing, err);
         return;
@@ -379,19 +433,64 @@ export class ModuleRegistry {
           this.manifest.push(dep);
         }
       }
-      await Promise.all(extra.map((dep) => this.fetchNodeModule(dep.n, dep.v, dep.s)));
+      await Promise.all(extra.map((dep) => this.installEntries(dep)));
     }
   }
 
-  private async _fetchModule(name: string, version: string, source: string): Promise<NodeModule> {
+  /** Install a tree entry with its entries, or add them to an installed package. */
+  private async installEntries(dep: IResolvedDependency): Promise<void> {
+    const entries = dep.e?.length ? dep.e : [ROOT_ENTRY];
+    const nodeModule = await this.fetchNodeModule(dep.n, dep.v, dep.s, entries);
+    await this.expandModule(nodeModule, entries);
+  }
+
+  /**
+   * Inline the closures of `entries` into an installed package. Content is
+   * immutable per release, so an expansion that fails leaves nothing to undo:
+   * its entries are just not recorded, and the next request retries them.
+   */
+  private async expandModule(nodeModule: NodeModule, entries: string[]): Promise<void> {
+    const release = nodeModule.release;
+    const missing = entries.filter((entry) => !nodeModule.entries.has(entry));
+    if (missing.length === 0) return;
+    if (!release) {
+      // An esm.sh fallback is synthesized whole; there is nothing to expand.
+      for (const entry of missing) nodeModule.entries.add(entry);
+      return;
+    }
+    await Promise.all(
+      missing.map((entry) => {
+        const key = `${nodeModule.name}\0${entry}`;
+        let expansion = this.expansions.get(key);
+        if (!expansion) {
+          expansion = fetchModuleEntries(release.name, release.version, [entry])
+            .then((part) => {
+              const merged = mergeModuleParts({ f: nodeModule.files, m: nodeModule.modules }, [part]);
+              nodeModule.files = merged.f;
+              nodeModule.modules = merged.m;
+              nodeModule.entries.add(entry);
+            })
+            .finally(() => this.expansions.delete(key));
+          this.expansions.set(key, expansion);
+        }
+        return expansion;
+      }),
+    );
+  }
+
+  private async _fetchModule(name: string, version: string, source: string, entries: string[]): Promise<NodeModule> {
     const fallbackRange = this.esmFallbacks.get(name);
     if (fallbackRange !== undefined) {
-      return this._fetchEsmFallbackModule(name, fallbackRange);
+      const fallback = await this._fetchEsmFallbackModule(name, fallbackRange);
+      fallback.entries = new Set(entries);
+      return fallback;
     }
-    // Prefer the zip-bundled content (R3-49a); fall back to the live CDN fetch.
+    // Prefer the zip-bundled content (R3-49a) — inlined whole, so it covers any
+    // entry; fall back to the live CDN fetch of the listing plus `entries`.
     // An `npm:` alias installs `source`'s files under `name`.
-    const module = (await this._fetchBundledModule(source, version)) ?? (await fetchModule(source, version));
+    const module = (await this._fetchBundledModule(source, version)) ?? (await fetchModule(source, version, entries));
     const processedNodeModule = new NodeModule(name, version, module.f, module.m, { name: source, version });
+    processedNodeModule.entries = new Set(entries);
     logger.debug('fetched module', name, version, module);
     return processedNodeModule;
   }
@@ -439,7 +538,7 @@ export class ModuleRegistry {
     return processedNodeModule;
   }
 
-  async fetchNodeModule(name: string, version: string, source = name): Promise<NodeModule> {
+  async fetchNodeModule(name: string, version: string, source = name, entries: string[] = [ROOT_ENTRY]): Promise<NodeModule> {
     // Module already found, skip fetching
     // This could also check version, but for now this is fine
     // as we don't allow multiple versions of the same module right now
@@ -451,7 +550,7 @@ export class ModuleRegistry {
     const cacheKey = `${name}::${source}::${version}`;
     let promise = this.moduleDownloadPromises.get(cacheKey);
     if (!promise || this.cancelledDownloads.has(promise)) {
-      const download: Promise<NodeModule> = this._fetchModule(name, version, source)
+      const download: Promise<NodeModule> = this._fetchModule(name, version, source, entries)
         .then((nodeModule) => {
           // A download a failed install rolled back must not register late.
           if (!this.cancelledDownloads.has(download)) this.modules.set(name, nodeModule);
@@ -488,7 +587,9 @@ export class ModuleRegistry {
         // test. Such a file must not fail the build here; if app code really
         // imports it, the normal resolution path reports the genuine error.
         try {
-          await module.addDependency(dep);
+          // Plain resolution: pre-linking runs inside an install batch, which an
+          // install or expansion triggered from here would wait on.
+          await module.addDependency(dep, (specifier, from) => this.bundler.resolveInstalled(specifier, from));
         } catch (err) {
           logger.warn(
             `CDN pre-link skipped: "${dep}" from ${path} could not be resolved (${
@@ -515,6 +616,10 @@ export class ModuleRegistry {
   }
 
   async loadModuleDependencies() {
+    // Boot scans and earlier imports may have cached these packages as absent.
+    // Clear those misses BEFORE linking: precompiled modules do not compile
+    // again later, so a skipped dependency would remain missing at evaluation.
+    this.bundler.forgetMissingNodeModules();
     const depPromises = [];
     for (let [moduleName, nodeModule] of this.modules) {
       for (let [fileName, file] of Object.entries(nodeModule.files)) {

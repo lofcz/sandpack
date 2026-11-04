@@ -61,7 +61,7 @@ it('correcting a failed dependency range actually retries the new release', asyn
   manifest.mockImplementation(async deps => Object.keys(deps).map(n => ({ n, v: '2.0.0', d: 0 })));
   moduleFetch.mockImplementation(async name => pkg(name));
   await h.bundler.resolveAsync('widget', underAppRoot('/second.ts'));
-  expect(moduleFetch).toHaveBeenLastCalledWith('widget', '2.0.0');
+  expect(moduleFetch).toHaveBeenLastCalledWith('widget', '2.0.0', ['.']);
 });
 
 it('does not resurrect a rolled-back package when a sibling download completes late', async () => {

@@ -7,6 +7,12 @@ if (!globalThis.crypto) {
   globalThis.crypto = webcrypto;
 }
 
+// jsdom omits these browser APIs, which ZenFS needs when the render harness
+// mounts the real filesystem. Node provides compatible implementations.
+const { TextEncoder, TextDecoder } = require('util');
+globalThis.TextEncoder ??= TextEncoder;
+globalThis.TextDecoder ??= TextDecoder;
+
 // Several bundler modules read the browser `self` global at module-load time
 // (e.g. `src/bundler/module/eval.ts`: `typeof window === 'undefined' ? self : window`).
 // The `node` test env has no `self`, so point it at `globalThis` before any module

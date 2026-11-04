@@ -6,6 +6,7 @@ import {
   computeDeclaredDepMap,
   computeRequestDepMap,
   importedPackages,
+  packageEntry,
   packageName,
   transformFile,
 } from '../dist/index.js';
@@ -100,6 +101,14 @@ test('packageName: maps specifiers to the package they load from node_modules', 
     assert.equal(packageName(specifier), expected, specifier);
   }
   assert.equal(packageName(undefined), null);
+});
+
+test('packageEntry: the entry a specifier imports, in the CDN\'s form', () => {
+  assert.equal(packageEntry('react'), '.');
+  assert.equal(packageEntry('react-dom/client'), './client');
+  assert.equal(packageEntry('@scope/pkg/a/b.js'), './a/b.js');
+  assert.equal(packageEntry('lodash/'), '.');
+  assert.equal(packageEntry('./local'), null);
 });
 
 test('importedPackages: dedupes package roots and drops local specifiers', () => {

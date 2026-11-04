@@ -6,3 +6,4 @@ pub mod collect_dep_tree;
 pub mod cached;
 pub mod disk_cache;
 pub mod npm_specifier;
+pub mod entries;

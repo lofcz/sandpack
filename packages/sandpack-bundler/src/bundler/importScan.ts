@@ -19,17 +19,19 @@ const MAX_SCANNED_FILES = 2000;
  * Walk the local module graph from `entries` and return every module specifier
  * it loads that leaves the graph (package imports). `moduleSpecifiers` lists a
  * module's raw specifiers; `resolveLocal` resolves one without installing
- * anything — a path under `appRoot` is followed, anything unresolvable or
- * outside is reported. Never throws.
+ * anything — a path under `appRoot` (or `alsoLocal`) is followed, anything
+ * unresolvable or outside is reported. Never throws.
  */
 export async function scanLocalImports(opts: {
   entries: string[];
   appRoot: string;
+  /** Paths outside `appRoot` that are part of the graph (bundler-owned modules). */
+  alsoLocal?: (path: string) => boolean;
   moduleSpecifiers: (path: string) => Promise<string[]>;
   resolveLocal: (specifier: string, from: string) => Promise<string>;
 }): Promise<string[]> {
-  const { entries, appRoot, moduleSpecifiers, resolveLocal } = opts;
-  const inRoot = (path: string): boolean => path.startsWith(`${appRoot}/`);
+  const { entries, appRoot, alsoLocal, moduleSpecifiers, resolveLocal } = opts;
+  const inRoot = (path: string): boolean => path.startsWith(`${appRoot}/`) || (alsoLocal?.(path) ?? false);
   const seen = new Set<string>(entries);
   const queue = [...entries];
   const external = new Set<string>();

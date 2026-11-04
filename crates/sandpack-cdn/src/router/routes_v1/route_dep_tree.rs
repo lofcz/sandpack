@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
@@ -14,13 +14,17 @@ use super::super::custom_reply::CustomReply;
 use super::super::error_reply::ErrorReply;
 use super::super::utils::{decode_req_part, LATEST_VERSION};
 
-/// `deps` are the packages to resolve (the ones the app imports); `pins` fix the
-/// range of a name wherever it appears in the tree (the app's declared map).
+/// `deps` are the packages to resolve (the ones the app imports) and
+/// `entries` what it imports from each (`.`, `./client`, …; `.` when absent);
+/// `pins` fix the range of a name wherever it appears in the tree (the app's
+/// declared map).
 #[derive(Deserialize)]
 struct DepTreeQuery {
     deps: HashMap<String, String>,
     #[serde(default)]
     pins: HashMap<String, String>,
+    #[serde(default)]
+    entries: HashMap<String, BTreeSet<String>>,
 }
 
 async fn process_dep_tree(
@@ -28,8 +32,14 @@ async fn process_dep_tree(
     npm_db: &NpmDatabase,
     pkg_processor: &CachedPackageProcessor,
 ) -> Result<DependencyList, ServerError> {
-    let query: DepTreeQuery = serde_json::from_str(decoded_query)?;
-    let dep_requests = process_dep_map(query.deps, 0)?;
+    let mut query: DepTreeQuery = serde_json::from_str(decoded_query)?;
+    let dep_requests = process_dep_map(query.deps, 0)?
+        .into_iter()
+        .map(|request| match query.entries.remove(request.name()) {
+            Some(entries) if !entries.is_empty() => request.with_entries(entries),
+            _ => request,
+        })
+        .collect();
     let pins = process_pins(query.pins)?;
     collect_dep_tree(dep_requests, pins, npm_db, pkg_processor).await
 }
@@ -40,7 +50,7 @@ pub async fn get_dep_tree_reply(
     pkg_processor: CachedPackageProcessor,
 ) -> Result<CustomReply, ServerError> {
     let (version, decoded_query) = decode_req_part(&path)?;
-    // The `{ deps, pins }` query exists only in the current protocol.
+    // The `{ deps, pins, entries }` query exists only in the current protocol.
     if version != LATEST_VERSION {
         return Err(ServerError::InvalidCDNVersion);
     }

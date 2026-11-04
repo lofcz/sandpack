@@ -138,6 +138,18 @@ export function packageName(specifier: unknown): string | null {
   return PACKAGE_NAME_RE.test(name) ? name : null;
 }
 
+/**
+ * The package entry a module specifier imports: `react` → `.`,
+ * `react-dom/client` → `./client`, `@scope/pkg/a/b` → `./a/b`. Null when the
+ * specifier is not a package import (`packageName`).
+ */
+export function packageEntry(specifier: unknown): string | null {
+  const name = packageName(specifier);
+  if (name === null) return null;
+  const subpath = (specifier as string).slice(name.length).replace(/^\/+|\/+$/g, '');
+  return subpath ? `./${subpath}` : '.';
+}
+
 /** The set of package names a list of module specifiers imports. */
 export function importedPackages(specifiers: Iterable<unknown>): Set<string> {
   const names = new Set<string>();

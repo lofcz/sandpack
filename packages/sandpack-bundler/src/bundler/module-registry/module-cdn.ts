@@ -68,11 +68,13 @@ export interface IResolvedDependency {
   d: number;
   // npm package the files come from, only for an `npm:` alias (`n` is then the install name)
   s?: string;
+  // the entries the tree loads from this package (`.`, `./client`, …)
+  e?: string[];
 }
 
 // Exported so the lockset check (lockset.ts) can reject locksets resolved
 // against a different CDN protocol version.
-export const CDN_VERSION = 6;
+export const CDN_VERSION = 7;
 
 function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
@@ -91,14 +93,20 @@ async function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
 }
 
 /**
- * Resolve `deps` (the packages to install) to a flat tree. `pins` fix a name's
- * range wherever it appears in that tree — the app's declared map plus what is
- * already installed — so a declared package reached only transitively (a peer)
- * still gets the app's version, and a later batch never re-resolves an
- * installed package to a different one.
+ * Resolve `deps` (the packages to install) to a flat tree. `entries` names
+ * what is imported from each (`.` when absent): only those entries' closures
+ * are followed, and each tree entry reports the entries it is loaded through.
+ * `pins` fix a name's range wherever it appears in that tree — the app's
+ * declared map plus what is already installed — so a declared package reached
+ * only transitively (a peer) still gets the app's version, and a later batch
+ * never re-resolves an installed package to a different one.
  */
-export async function fetchManifest(deps: DepMap, pins: DepMap = {}): Promise<IResolvedDependency[]> {
-  const result = await fetchPayload('dep_tree', JSON.stringify({ deps, pins }));
+export async function fetchManifest(
+  deps: DepMap,
+  pins: DepMap = {},
+  entries: Record<string, string[]> = {},
+): Promise<IResolvedDependency[]> {
+  const result = await fetchPayload('dep_tree', JSON.stringify({ deps, pins, entries }));
   const buffer = await result.arrayBuffer();
   return decodeMsgPack(buffer) as IResolvedDependency[];
 }
@@ -121,9 +129,43 @@ export interface ICDNModule {
   m: string[];
 }
 
-export async function fetchModule(name: string, version: string): Promise<ICDNModule> {
-  const specifier = `${name}@${version}`;
-  const result = await fetchPayload('package', specifier);
-  const buffer = await result.arrayBuffer();
-  return decodeMsgPack(buffer) as ICDNModule;
+/** One `/package` response: an entry's closure, or the listing (`entry: null`). */
+async function fetchPackagePart(name: string, version: string, entry: string | null): Promise<ICDNModule> {
+  const result = await fetchPayload('package', JSON.stringify({ name, version, entry }));
+  return decodeMsgPack(await result.arrayBuffer()) as ICDNModule;
+}
+
+/** Overlay inlined files onto `into` (a listing entry becomes the inlined file). */
+export function mergeModuleParts(into: ICDNModule, parts: ICDNModule[]): ICDNModule {
+  const files = { ...into.f };
+  const modules = new Set(into.m);
+  for (const part of parts) {
+    for (const [path, file] of Object.entries(part.f)) {
+      if (typeof file === 'object' || files[path] === undefined) files[path] = file;
+    }
+    for (const name of part.m) modules.add(name);
+  }
+  return { f: files, m: [...modules] };
+}
+
+/**
+ * The closures of `entries` without the listing — for a package already
+ * installed, whose listing the bundler holds.
+ */
+export async function fetchModuleEntries(name: string, version: string, entries: string[]): Promise<ICDNModule> {
+  const parts = await Promise.all(entries.map((entry) => fetchPackagePart(name, version, entry)));
+  return mergeModuleParts({ f: {}, m: [] }, parts);
+}
+
+/**
+ * A package release as the bundler installs it: the file listing (what
+ * resolution sees) with the closures of `entries` inlined. Each part is its
+ * own immutable, separately cached response.
+ */
+export async function fetchModule(name: string, version: string, entries: string[] = ['.']): Promise<ICDNModule> {
+  const [listing, ...parts] = await Promise.all([
+    fetchPackagePart(name, version, null),
+    ...entries.map((entry) => fetchPackagePart(name, version, entry)),
+  ]);
+  return mergeModuleParts(listing, parts);
 }
