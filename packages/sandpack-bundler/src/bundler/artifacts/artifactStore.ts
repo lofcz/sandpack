@@ -166,6 +166,12 @@ export class ArtifactStore {
     return { content, deps: this.deps.get(appModulePath) ?? [] };
   }
 
+  /** Every dependency specifier recorded for a seeded or written-through
+   *  module — the import set the boot install starts from. */
+  recordedSpecifiers(): string[] {
+    return [...this.deps.values()].flat();
+  }
+
   /**
    * Write a live-transpiled module through to `/transpiled` (§5.3 miss path), so an
    * in-session re-read (e.g. after an HMR invalidation cascade that didn't reset

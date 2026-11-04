@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(reply.headers()["cache-control"], "no-store");
         let body: serde_json::Value = reply.json().await.unwrap();
         assert_eq!(body["name"], "sandpack-cdn");
-        assert_eq!(body["protocol"], 5);
+        assert_eq!(body["protocol"], 6);
         assert_eq!(body["maxBodyBytes"], 64 * 1024);
         assert!(!body["commit"].as_str().unwrap().is_empty());
         let advertised: Vec<&str> = body["capabilities"]
@@ -92,7 +92,7 @@ mod tests {
 
         // The router's own not-found reply means a transport is missing; a 400 for
         // an invalid payload proves the route exists.
-        let empty = base64_simd::STANDARD.encode_to_string(b"5({})");
+        let empty = base64_simd::STANDARD.encode_to_string(br#"6({"deps":{}})"#);
         for capability in crate::router::version::CAPABILITIES {
             let request = match *capability {
                 "dep_tree:get" => client.get(format!("{base}/dep_tree/{empty}")),
@@ -130,7 +130,7 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let client = reqwest::Client::new();
-        let legacy = base64_simd::STANDARD.encode_to_string(b"5({})");
+        let legacy = base64_simd::STANDARD.encode_to_string(br#"6({"deps":{}})"#);
         let get = client
             .get(format!("{base}/dep_tree/{legacy}"))
             .send()
@@ -138,8 +138,16 @@ mod tests {
             .unwrap();
         assert_eq!(get.status(), 200);
         let expected = get.bytes().await.unwrap();
+        // The `{ deps, pins }` query is v6-only; an older protocol is refused.
+        let outdated = base64_simd::STANDARD.encode_to_string(b"5({})");
+        let rejected = client
+            .get(format!("{base}/dep_tree/{outdated}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), 400);
         let large = base64_simd::STANDARD
-            .encode_to_string(format!("5({{{}}})", " ".repeat(1000)).as_bytes());
+            .encode_to_string(format!("6({{\"deps\":{{}}{}}})", " ".repeat(1000)).as_bytes());
         assert!(large.len() > 260);
         let post = client
             .post(format!("{base}/dep_tree"))

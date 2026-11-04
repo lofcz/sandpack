@@ -6,7 +6,7 @@ import { createBundlerHarness, EVAL_FIXTURE, installEvalGlobals, type BundlerHar
 // R3-48 G0-4 [harness] proofs for the edit/reload behavior over the flipped mount table
 // (plan 02-zenfs-unification.md exit map). Complements `bundlerHarness.evaluate.test.ts`
 // (the seeded-module edit-pickup / HMR-parity row). Covered here:
-//   - a package.json no-op rewrite does NOT reload (the `_previousDepString` loop guard)
+//   - a package.json no-op rewrite does NOT reload (no installed version changed)
 //   - without HMR a real edit triggers a full page reload (the reload-vs-HMR parity)
 //   - rapid successive edits racing a single recompile are not lost — the LATEST bytes
 //     are re-read + re-transpiled (the "edit racing boot not lost" row)
@@ -49,7 +49,7 @@ describe('G0-4 [harness] edit/reload behavior over the flipped mount table', () 
   // package.json the parent's addPackageJSONIfNeeded re-issues on every handshake. An
   // unguarded no-op would loop: fs-change → reload → handshake → rewrite → … It is
   // exempt from the HMR-reload check, and same deps → no dep reload.
-  it('a package.json no-op rewrite does NOT reload (the _previousDepString loop guard)', async () => {
+  it('a package.json no-op rewrite does NOT reload (no installed version changed)', async () => {
     await fs.promises.writeFile(underAppRoot('/package.json'), EVAL_FIXTURE['package.json']);
     h.bundler.markFilesChanged([underAppRoot('/package.json')]);
     reloadSpy.mockClear();

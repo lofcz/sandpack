@@ -2,25 +2,36 @@ use std::collections::HashMap;
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 
 use crate::app_error::ServerError;
 use crate::npm_replicator::database::NpmDatabase;
 use crate::package::cached::CachedPackageProcessor;
-use crate::package::collect_dep_tree::{collect_dep_tree, process_dep_map, DependencyList};
+use crate::package::collect_dep_tree::{collect_dep_tree, process_dep_map, process_pins, DependencyList};
 use crate::router::routes::AppState;
 
 use super::super::custom_reply::CustomReply;
 use super::super::error_reply::ErrorReply;
-use super::super::utils::decode_req_part;
+use super::super::utils::{decode_req_part, LATEST_VERSION};
+
+/// `deps` are the packages to resolve (the ones the app imports); `pins` fix the
+/// range of a name wherever it appears in the tree (the app's declared map).
+#[derive(Deserialize)]
+struct DepTreeQuery {
+    deps: HashMap<String, String>,
+    #[serde(default)]
+    pins: HashMap<String, String>,
+}
 
 async fn process_dep_tree(
-    decoded_deps_str: &str,
+    decoded_query: &str,
     npm_db: &NpmDatabase,
     pkg_processor: &CachedPackageProcessor,
 ) -> Result<DependencyList, ServerError> {
-    let dep_map: HashMap<String, String> = serde_json::from_str(decoded_deps_str)?;
-    let dep_requests = process_dep_map(dep_map, 0)?;
-    collect_dep_tree(dep_requests, npm_db, pkg_processor).await
+    let query: DepTreeQuery = serde_json::from_str(decoded_query)?;
+    let dep_requests = process_dep_map(query.deps, 0)?;
+    let pins = process_pins(query.pins)?;
+    collect_dep_tree(dep_requests, pins, npm_db, pkg_processor).await
 }
 
 pub async fn get_dep_tree_reply(
@@ -28,14 +39,14 @@ pub async fn get_dep_tree_reply(
     npm_db: NpmDatabase,
     pkg_processor: CachedPackageProcessor,
 ) -> Result<CustomReply, ServerError> {
-    let (version, decoded_deps_str) = decode_req_part(&path)?;
+    let (version, decoded_query) = decode_req_part(&path)?;
+    // The `{ deps, pins }` query exists only in the current protocol.
+    if version != LATEST_VERSION {
+        return Err(ServerError::InvalidCDNVersion);
+    }
 
-    let tree = process_dep_tree(&decoded_deps_str, &npm_db, &pkg_processor).await?;
-
-    let mut reply = match version {
-        0..=4 => CustomReply::json(&tree),
-        _ => CustomReply::msgpack(&tree),
-    }?;
+    let tree = process_dep_tree(&decoded_query, &npm_db, &pkg_processor).await?;
+    let mut reply = CustomReply::msgpack(&tree)?;
     let cache_ttl = 15 * 60;
     reply.add_header(
         "Cache-Control",

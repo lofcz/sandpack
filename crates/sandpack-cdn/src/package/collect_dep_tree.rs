@@ -128,6 +128,20 @@ impl Dependency {
 
 pub type DependencyList = Vec<Dependency>;
 
+/// Ranges that override every request for a name, at any depth — the app's
+/// declared versions plus whatever the client already installed. The tree is
+/// flat (one version per name) and the first request to resolve wins, so
+/// without pins a package the app declares but does not request directly (a
+/// peer such as `react` behind `react-dom`) would take its parent's range.
+pub type Pins = HashMap<String, DependencyRequest>;
+
+pub fn process_pins(pin_map: HashMap<String, String>) -> Result<Pins, ServerError> {
+    Ok(process_dep_map(pin_map, 0)?
+        .into_iter()
+        .map(|pin| (pin.name.clone(), pin))
+        .collect())
+}
+
 pub fn process_dep_map(
     dep_map: HashMap<String, String>,
     depth: u32,
@@ -214,13 +228,15 @@ struct DepTreeCollector {
     /// First resolution error wins; surfaced after all spawned work joins.
     first_error: Arc<Mutex<Option<ServerError>>>,
     pkg_processor: CachedPackageProcessor,
+    pins: Arc<Pins>,
 }
 
 impl DepTreeCollector {
-    pub fn new(npm_db: NpmDatabase, pkg_processor: CachedPackageProcessor) -> Self {
+    pub fn new(npm_db: NpmDatabase, pkg_processor: CachedPackageProcessor, pins: Pins) -> Self {
         DepTreeCollector {
             npm_db,
             pkg_processor,
+            pins: Arc::new(pins),
             dependencies: Arc::new(Mutex::new(Vec::new())),
             futures: Arc::new(Mutex::new(VecDeque::new())),
             in_progress: Arc::new(Mutex::new(Vec::new())),
@@ -323,6 +339,7 @@ impl DepTreeCollector {
 
     fn add_dep_requests(&self, dep_requests: Vec<DependencyRequest>) {
         for dep_req in dep_requests {
+            let dep_req = apply_pin(&self.pins, dep_req);
             if !self.should_skip_dep_request(dep_req.clone()) {
                 self.add_future(dep_req.clone());
                 self.add_dep_request(dep_req.clone());
@@ -336,10 +353,11 @@ impl DepTreeCollector {
 
     pub async fn try_collect(
         dep_requests: Vec<DependencyRequest>,
+        pins: Pins,
         npm_db: NpmDatabase,
         pkg_processor: CachedPackageProcessor,
     ) -> Result<DependencyList, ServerError> {
-        let collector = DepTreeCollector::new(npm_db, pkg_processor);
+        let collector = DepTreeCollector::new(npm_db, pkg_processor, pins);
         collector.add_dep_requests(dep_requests);
 
         while let Some(handle) = collector.get_next_join() {
@@ -356,12 +374,25 @@ impl DepTreeCollector {
     }
 }
 
+/// A request for a pinned name takes the pin's range (and alias source), keeping
+/// its own depth.
+fn apply_pin(pins: &Pins, request: DependencyRequest) -> DependencyRequest {
+    match pins.get(&request.name) {
+        Some(pin) => DependencyRequest {
+            depth: request.depth,
+            ..pin.clone()
+        },
+        None => request,
+    }
+}
+
 pub async fn collect_dep_tree(
     dep_requests: Vec<DependencyRequest>,
+    pins: Pins,
     npm_db: &NpmDatabase,
     pkg_processor: &CachedPackageProcessor,
 ) -> Result<DependencyList, ServerError> {
-    DepTreeCollector::try_collect(dep_requests, npm_db.clone(), pkg_processor.clone()).await
+    DepTreeCollector::try_collect(dep_requests, pins, npm_db.clone(), pkg_processor.clone()).await
 }
 
 #[cfg(test)]
@@ -463,6 +494,27 @@ mod tests {
         assert_eq!(plain, serde_json::json!({ "n": "react", "v": "19.0.0", "d": 0 }));
         let alias = serde_json::to_value(Dependency::new("react".into(), "10.26.0".into(), 0, "preact".into())).unwrap();
         assert_eq!(alias, serde_json::json!({ "n": "react", "v": "10.26.0", "d": 0, "s": "preact" }));
+    }
+
+    #[test]
+    fn pin_overrides_a_transitive_range_and_keeps_its_depth() {
+        let pins = process_pins(HashMap::from([
+            ("react".to_string(), "^19.0.0".to_string()),
+            ("ui".to_string(), "npm:@scope/ui@^2.0.0".to_string()),
+        ]))
+        .unwrap();
+        let pkg = pkg_with_versions("react", &["18.3.1", "19.2.0"]);
+
+        let pinned = apply_pin(&pins, DependencyRequest::new("react", "^18.0.0", 2).unwrap());
+        assert_eq!(pinned.depth, 2);
+        assert_eq!(pinned.range_str, "^19.0.0");
+        assert_eq!(pinned.resolve_version(&pkg).as_deref(), Some("19.2.0"));
+
+        let alias = apply_pin(&pins, DependencyRequest::new("ui", "^1.0.0", 1).unwrap());
+        assert_eq!(alias.source, "@scope/ui");
+
+        let free = apply_pin(&pins, DependencyRequest::new("scheduler", "^0.27.0", 1).unwrap());
+        assert_eq!(free.range_str, "^0.27.0");
     }
 
     #[test]

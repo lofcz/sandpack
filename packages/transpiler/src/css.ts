@@ -199,3 +199,27 @@ export function analyzeCss(source: string): CssAnalysis {
 export function cssNeedsTailwind(source: string): boolean {
   return analyzeCss(source).requiresTailwind;
 }
+
+/**
+ * Module specifiers a stylesheet loads at runtime: its non-compiler `@import`
+ * targets (package stylesheets resolve through `node_modules`), plus the
+ * Tailwind browser compiler the style transformer adds when the sheet needs it.
+ * The CLI folds these into the lockset's import set; the runtime discovers the
+ * same edges through the resolver.
+ */
+export function cssModuleSpecifiers(source: string): string[] {
+  const specifiers: string[] = [];
+  let ast: CssNode;
+  try {
+    ast = stylesheet(source);
+  } catch {
+    return specifiers;
+  }
+  walk(ast, { visit: 'Atrule', enter(node) {
+    if (node.block || ident.decode(node.name).toLowerCase() !== 'import') return;
+    const target = importTarget(importParameter(node));
+    if (target !== null && target !== 'tailwindcss' && !target.startsWith('tailwindcss/')) specifiers.push(target);
+  } });
+  if (cssNeedsTailwind(source)) specifiers.push('@tailwindcss/browser');
+  return specifiers;
+}

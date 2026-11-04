@@ -9,7 +9,7 @@ import { ModuleRegistry } from './index';
 import { fetchManifest, fetchModule, ICDNModule } from './module-cdn';
 
 jest.mock('./module-cdn', () => ({
-  CDN_VERSION: 5,
+  CDN_VERSION: 6,
   fetchManifest: jest.fn(),
   fetchModule: jest.fn(),
 }));
@@ -55,13 +55,15 @@ describe('ModuleRegistry used-module closure', () => {
     });
 
     const registry = new ModuleRegistry(stubBundler());
-    await registry.fetchManifest({ '@tailwindcss/browser': 'latest' }, false);
+    await registry.fetchManifest({ '@tailwindcss/browser': 'latest' }, { '@tailwindcss/browser': 'latest' });
     await registry.preloadModules();
 
     expect(registry.modules.has('@tailwindcss/browser')).toBe(true);
     expect(registry.modules.has('@swc/helpers')).toBe(true);
     expect(mockedFetchManifest).toHaveBeenCalledTimes(2);
     expect(mockedFetchManifest.mock.calls[1][0]).toEqual({ '@swc/helpers': 'latest' });
+    // The closure request pins what is already installed.
+    expect(mockedFetchManifest.mock.calls[1][1]).toEqual({ '@tailwindcss/browser': '4.3.3' });
     expect(registry.manifest.some((d) => d.n === '@swc/helpers')).toBe(true);
   });
 });

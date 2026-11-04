@@ -132,6 +132,24 @@ export class CachedFS {
     this.isFileCache = new Map();
   }
 
+  /** Forget everything cached under `prefix` (a package rolled back by a
+   *  failed install, whose next install may be another release). */
+  forgetPrefix(prefix: string): void {
+    for (const cache of [this.fileCache, this.bytesCache, this.isFileCache]) {
+      for (const path of cache.keys()) {
+        if (path.startsWith(prefix)) cache.delete(path);
+      }
+    }
+  }
+
+  /** Forget cached absences under `prefix`: files that appear there later (a
+   *  package installed mid-compile) must not stay hidden. */
+  forgetMissing(prefix: string): void {
+    for (const [path, isFile] of this.isFileCache) {
+      if (!isFile && path.startsWith(prefix)) this.isFileCache.delete(path);
+    }
+  }
+
   /**
    * Write THROUGH to the bound context (the mount table) — `/node_modules` writes
    * land on the CopyOnWrite writable side, `/empty.js` on the root tmpfs — then

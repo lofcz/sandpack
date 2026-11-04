@@ -76,7 +76,9 @@ Ordinary stylesheets keep the normal CSS path.
   toolchain hash it bakes at build time always matches the local transpiler.
 - The CDN protocol version must stay in lockstep across:
   `packages/sandpack-bundler/src/bundler/module-registry/module-cdn.ts` (`CDN_VERSION`)
-  and the host's process service (`CdnProtocolVersion`). Currently **5**.
+  and the host's process service (`CdnProtocolVersion`). Currently **6**. `/dep_tree` takes `{ "deps": { ... }, "pins": { ... } }`;
+  `pins` is optional. Deploy the bundler, CDN binary, and host prewarmer together.
+  Existing clients using protocol 5 need to reload after this upgrade.
 
 ## Notes
 

@@ -1,9 +1,10 @@
-// Jest 27's default resolver does not honor a package's `exports` field, so
-// modern exports-only subpaths (e.g. `kerium/log`, `utilium/requests`, pulled in
-// transitively by `@zenfs/core`) fail to resolve. This resolver tries the
-// default first and, only on failure, falls back to `exports`-field resolution
-// for bare package imports. Transforming those ESM dist files is already handled
-// by `transformIgnorePatterns: []` in jest.config.js.
+// Jest 27's default resolver honors neither a package's `exports` field nor its
+// `imports` field, so modern exports-only subpaths (e.g. `kerium/log`,
+// `utilium/requests`, pulled in transitively by `@zenfs/core`) and subpath
+// imports (`#minpath` in `vfile`, pulled in by `@mdx-js/mdx`) fail to resolve.
+// This resolver tries the default first and, only on failure, falls back to the
+// package's own maps. Transforming those ESM dist files is already handled by
+// `transformIgnorePatterns: []` in jest.config.js.
 const fs = require('fs');
 const path = require('path');
 const { resolve: resolveExports } = require('resolve.exports');
@@ -22,11 +23,51 @@ function findPackageJson(pkgName, basedir) {
   }
 }
 
+const CONDITIONS = ['node', 'import', 'require', 'default'];
+
+function pickTarget(target) {
+  if (typeof target === 'string' || target === null) return target;
+  if (Array.isArray(target)) return target.map(pickTarget).find(Boolean) ?? null;
+  for (const condition of CONDITIONS) {
+    if (condition in target) return pickTarget(target[condition]);
+  }
+  return null;
+}
+
+// `#name` resolves through the `imports` map of the importing file's own
+// package: an exact key, or a single-`*` pattern.
+function resolveSubpathImport(request, basedir) {
+  for (let dir = basedir; ; dir = path.dirname(dir)) {
+    const pkgJsonPath = path.join(dir, 'package.json');
+    if (fs.existsSync(pkgJsonPath)) {
+      const imports = require(pkgJsonPath).imports;
+      if (!imports) return null;
+      let target = imports[request] !== undefined ? pickTarget(imports[request]) : null;
+      if (!target) {
+        for (const [key, value] of Object.entries(imports)) {
+          const star = key.indexOf('*');
+          if (star < 0 || !request.startsWith(key.slice(0, star)) || !request.endsWith(key.slice(star + 1))) continue;
+          const match = request.slice(star, request.length - (key.length - star - 1));
+          target = pickTarget(value)?.replace('*', match) ?? null;
+          break;
+        }
+      }
+      return target ? path.join(dir, target) : null;
+    }
+    if (path.dirname(dir) === dir) return null;
+  }
+}
+
 module.exports = (request, options) => {
   const { defaultResolver, basedir } = options;
   try {
     return defaultResolver(request, options);
   } catch (err) {
+    if (request.startsWith('#')) {
+      const target = resolveSubpathImport(request, basedir);
+      if (!target) throw err;
+      return target;
+    }
     // Only bare package specifiers have an `exports` map to consult.
     if (request.startsWith('.') || path.isAbsolute(request)) throw err;
 

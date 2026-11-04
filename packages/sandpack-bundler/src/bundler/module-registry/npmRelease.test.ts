@@ -37,7 +37,7 @@ describe('npm alias', () => {
       m: [],
     }));
     const registry = new ModuleRegistry(stubBundler());
-    await registry.fetchManifest({ react: 'npm:preact@^10' }, false);
+    await registry.fetchManifest({ react: 'npm:preact@^10' }, { react: 'npm:preact@^10' });
     await registry.preloadModules();
 
     expect(mockedFetchModule.mock.calls.map(([name, version]) => `${name}@${version}`).sort()).toEqual([

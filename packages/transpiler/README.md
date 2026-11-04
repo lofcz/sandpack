@@ -20,13 +20,21 @@ enforceable. See `PRETRANSPILED_ARTIFACTS_SPEC.md` §4.4.
 ```ts
 import {
   transformFile,         // run the full chain for one module -> { code, deps } | { error }
-  computeInputDepMap,    // the runtime's input DepMap derivation (augment → filter → sort)
+  computeDeclaredDepMap, // the app's declared DepMap: versions + lockset echo (strip self-hosted → augment → sort)
+  computeRequestDepMap,  // what /dep_tree resolves: declared ∩ imported packages + preset implicits
+  importedPackages,      // module specifiers → the package names they load (packageName per specifier)
   computeToolchainHash,  // canonical SHA-256 over the published tarball's bytes (§4.4)
   TRANSPILER_VERSION,    // the stamp (package version, baked at build)
   PRESET_NAME,           // 'react' (v1 covers the react preset only)
   isTransformable,       // which extensions this package owns
 } from '@lofcz/transpiler';
+import { cssModuleSpecifiers } from '@lofcz/transpiler/css'; // a stylesheet's runtime package imports
 ```
+
+The lockset for a cache zip is `{ cdnVersion: 6, dependencies: computeDeclaredDepMap(pkg.dependencies),
+requested: computeRequestDepMap(dependencies, importedPackages(specifiers)), resolved }`, where
+`specifiers` is every artifact's `deps` plus `cssModuleSpecifiers` of each stylesheet, and `resolved`
+is the `/dep_tree` response to `{ deps: requested, pins: dependencies }`.
 
 `transformFile({ path, code })` picks the chain variant from the path, exactly as
 the sandbox's `ReactPreset.mapTransformers` does:

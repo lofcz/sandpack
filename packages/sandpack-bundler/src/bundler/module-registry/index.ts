@@ -5,7 +5,6 @@ import { sortObj } from '../../utils/object';
 import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { scanCjsModule } from '../transforms/raw-cjs/scan';
-import { filterBuildDeps } from './build-dep';
 import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
 import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
 import {
@@ -47,15 +46,38 @@ function trustCdnPrecompiled(file: ICDNModuleFile): boolean {
 export type DepMap = { [depName: string]: string };
 
 // The resolution-completeness guard (`assertDependenciesResolved`) lives in
-// @lofcz/transpiler alongside `computeInputDepMap`, the single source
-// of truth shared with the CLI cache-zip builder (PRETRANSPILED_ARTIFACTS_SPEC
-// §4.4) so a silently-dropped package reads identically at boot and at build time.
+// @lofcz/transpiler alongside `computeDeclaredDepMap`/`computeRequestDepMap`,
+// the single source of truth shared with the CLI cache-zip builder
+// (PRETRANSPILED_ARTIFACTS_SPEC §4.4) so a silently-dropped package reads
+// identically at boot and at build time.
+
+// How long imports discovered by concurrently compiling modules are collected
+// into one /dep_tree request before it is sent.
+const INSTALL_BATCH_WINDOW_MS = 10;
+
+const hasOwn = (deps: DepMap, name: string): boolean => Object.prototype.hasOwnProperty.call(deps, name);
 
 export class ModuleRegistry {
   modules: Map<string, NodeModule> = new Map();
   moduleDownloadPromises: Map<string, Promise<NodeModule>> = new Map();
+  // In-flight downloads a failed install rolled back; they finish unregistered.
+  private cancelledDownloads: Set<Promise<NodeModule>> = new Set();
 
   manifest: IResolvedDependency[] = [];
+
+  // The app's declared DepMap: the version source for every install and the
+  // /dep_tree pins. Only declared packages are ever requested.
+  private declared: DepMap = {};
+
+  // On-demand installs (`ensurePackages`): the per-name install promise, the
+  // names collected for the next batch, and the chain that runs batches one at
+  // a time so each one pins everything the previous ones installed.
+  private installs: Map<string, Promise<void>> = new Map();
+  private nextBatch: { names: Set<string>; done: Promise<void> } | null = null;
+  private installChain: Promise<void> = Promise.resolve();
+  // Batches queued or running; while any is, a package may be visible before
+  // its dependency closure is (`whenIdle`).
+  private pendingBatches = 0;
 
   // Bundled-package index (R3-49a): `name@version` → in-zip filename. `undefined`
   // = not yet loaded; `null` = no bundle present / malformed (resolve live).
@@ -113,43 +135,47 @@ export class ModuleRegistry {
     }
   }
 
-  async fetchManifest(deps: DepMap, shouldFilterBuildDeps = true, lockset?: LocksetSection): Promise<void> {
-    if (shouldFilterBuildDeps) {
-      deps = filterBuildDeps(deps);
-    }
-
-    const sortedDeps = sortObj(deps);
+  /**
+   * Resolve the boot install: `request` (the declared packages the app is known
+   * to import, `computeRequestDepMap`) against `declared`. Anything imported
+   * later installs through `ensurePackages`.
+   */
+  async fetchManifest(declared: DepMap, request: DepMap, lockset?: LocksetSection): Promise<void> {
+    this.declared = sortObj(declared);
+    let requested = sortObj(request);
 
     // A sidecar lockset (PRETRANSPILED_ARTIFACTS_SPEC §5.4) replaces the
-    // blocking /dep_tree request — but only on an exact input match, so a
-    // stale or foreign lockset can never be applied. `validateLockset` has
+    // blocking /dep_tree request — but only on an exact declared-map match, so
+    // a stale or foreign lockset can never be applied. `validateLockset` has
     // already checked shape + cdnVersion; the dependency echo is checked here
-    // because this is where the final (filtered) input DepMap exists.
+    // because this is where the final declared DepMap exists. The lockset's own
+    // `requested` (the CLI's import scan) replaces ours.
     let resolvedFromLockset = false;
     if (lockset) {
-      if (depMapsEqual(sortedDeps, lockset.dependencies)) {
-        // The echo matches the INPUT, but a lockset could still inject extra
-        // packages into `resolved` (SPEC_REVIEW PT-2). Reject the WHOLE lockset
-        // if its resolved set isn't closed over the declared deps; never trust
-        // it partially. Falls through to live /dep_tree resolution.
+      if (depMapsEqual(this.declared, lockset.dependencies)) {
+        // The echo matches, but a lockset could still inject extra packages
+        // (SPEC_REVIEW PT-2). Reject the WHOLE lockset if its request isn't
+        // declared or its resolved set isn't closed over the request; never
+        // trust it partially. Falls through to live /dep_tree resolution.
         if (locksetClosureValid(lockset)) {
           logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
           this.manifest = lockset.resolved;
+          requested = lockset.requested;
           resolvedFromLockset = true;
         } else {
-          logger.warn('Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live');
+          logger.warn('Sidecar lockset failed closure validation (request not declared or resolved not closed over it); resolving live');
         }
       } else {
         logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
-          computed: sortedDeps,
+          computed: this.declared,
           lockset: lockset.dependencies,
         });
       }
     }
 
     if (!resolvedFromLockset) {
-      logger.debug('Fetching manifest', sortedDeps);
-      this.manifest = await fetchManifest(sortedDeps);
+      logger.debug('Fetching manifest', requested);
+      this.manifest = await fetchManifest(requested, this.pins());
       logger.debug('fetched manifest', this.manifest);
     }
 
@@ -161,8 +187,132 @@ export class ModuleRegistry {
     // MISSING ones) won't catch it. Register esm.sh fallbacks (no-op when
     // disabled) then guard, so a dropped dep surfaces the clear error rather than
     // a cryptic undefined import — on either path.
-    this.registerEsmFallbacks(sortedDeps);
-    assertDependenciesResolved(sortedDeps, this.manifest);
+    this.registerEsmFallbacks(requested);
+    assertDependenciesResolved(requested, this.manifest);
+  }
+
+  /** Whether the app declares `name` (and so may install it on demand). */
+  isDeclared(name: string): boolean {
+    return hasOwn(this.declared, name);
+  }
+
+  /** The declared range for `name`, if any. */
+  declaredRange(name: string): string | undefined {
+    return this.isDeclared(name) ? this.declared[name] : undefined;
+  }
+
+  /**
+   * Adopt an edited declared map without reinstalling: packages already
+   * installed keep their versions (the bundler reloads when one of theirs
+   * changes), new ones install when first imported.
+   */
+  setDeclared(declared: DepMap): void {
+    this.declared = sortObj(declared);
+    // A failed install may succeed against the edited range.
+    for (const [name, install] of this.installs) {
+      install.catch(() => this.installs.delete(name));
+    }
+  }
+
+  /**
+   * Install declared packages the app imports that the boot install did not
+   * cover (lazy routes, edits, imports a lockset's scan could not see). Imports
+   * discovered within `INSTALL_BATCH_WINDOW_MS` share one /dep_tree request;
+   * undeclared or already-installed names are ignored.
+   */
+  ensurePackages(names: Iterable<string>): Promise<void> {
+    const waits: Promise<void>[] = [];
+    for (const name of names) {
+      if (this.modules.has(name) || !this.isDeclared(name)) continue;
+      let install = this.installs.get(name);
+      if (!install) {
+        install = this.enqueueInstall(name);
+        this.installs.set(name, install);
+      }
+      waits.push(install);
+    }
+    return Promise.all(waits).then(() => undefined);
+  }
+
+  /**
+   * Settles once no install batch is queued or running, or null when none is.
+   * Code that imports packages waits here so it never sees a package whose
+   * dependency closure is still being installed.
+   */
+  whenIdle(): Promise<void> | null {
+    if (this.pendingBatches === 0) return null;
+    const current = this.nextBatch?.done ?? this.installChain;
+    return current.catch(() => undefined).then(() => this.whenIdle() ?? undefined);
+  }
+
+  private enqueueInstall(name: string): Promise<void> {
+    if (!this.nextBatch) {
+      const names = new Set<string>();
+      this.pendingBatches++;
+      const done = new Promise<void>((resolve) => setTimeout(resolve, INSTALL_BATCH_WINDOW_MS)).then(() => {
+        this.nextBatch = null;
+        const run = this.installChain
+          .catch(() => undefined)
+          .then(() => this.installBatch(names))
+          .finally(() => this.pendingBatches--);
+        this.installChain = run;
+        return run;
+      });
+      this.nextBatch = { names, done };
+    }
+    this.nextBatch.names.add(name);
+    return this.nextBatch.done;
+  }
+
+  /**
+   * Install one batch, all or nothing: a failure (CDN drop, download error)
+   * leaves no trace — no manifest entry, fallback, module or cached file — so a
+   * retry, e.g. against a corrected range, starts clean.
+   */
+  private async installBatch(names: Set<string>): Promise<void> {
+    const request: DepMap = {};
+    for (const name of names) {
+      if (!this.modules.has(name)) request[name] = this.declared[name];
+    }
+    if (Object.keys(request).length === 0) return;
+
+    logger.debug('Installing imported packages', request);
+    const resolved = await fetchManifest(sortObj(request), this.pins());
+    const manifestBefore = this.manifest;
+    const fallbacksBefore = new Map(this.esmFallbacks);
+    const modulesBefore = new Set(this.modules.keys());
+    const known = new Set(manifestBefore.map((dep) => dep.n));
+    this.manifest = [...manifestBefore, ...resolved.filter((dep) => !known.has(dep.n))];
+    try {
+      this.registerEsmFallbacks(request);
+      assertDependenciesResolved(request, this.manifest);
+      await this.preloadModules();
+      await this.loadModuleDependencies();
+    } catch (err) {
+      for (const download of this.moduleDownloadPromises.values()) this.cancelledDownloads.add(download);
+      this.manifest = manifestBefore;
+      this.esmFallbacks = fallbacksBefore;
+      for (const name of [...this.modules.keys()]) {
+        if (modulesBefore.has(name)) continue;
+        this.modules.delete(name);
+        this.bundler.forgetNodeModule?.(name);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * /dep_tree pins: the declared ranges, overridden by the exact release of
+   * every installed package — the flat tree holds one version per name.
+   */
+  private pins(): DepMap {
+    const pins: DepMap = { ...this.declared };
+    for (const [name, nodeModule] of this.modules) {
+      const release = nodeModule.release;
+      if (!release || this.esmFallbacks.has(name)) continue;
+      pins[name] = release.name === name ? release.version : `npm:${release.name}@${release.version}`;
+    }
+    return pins;
   }
 
   // For every requested top-level dep the primary CDN silently dropped, register
@@ -215,7 +365,7 @@ export class ModuleRegistry {
       logger.debug('Fetching used-module closure omitted by dep_tree', missing);
       let extra: IResolvedDependency[];
       try {
-        extra = await fetchManifest(missing);
+        extra = await fetchManifest(missing, this.pins());
       } catch (err) {
         logger.warn('used-module closure dep_tree failed; continuing without', missing, err);
         return;
@@ -242,7 +392,6 @@ export class ModuleRegistry {
     // An `npm:` alias installs `source`'s files under `name`.
     const module = (await this._fetchBundledModule(source, version)) ?? (await fetchModule(source, version));
     const processedNodeModule = new NodeModule(name, version, module.f, module.m, { name: source, version });
-    this.modules.set(name, processedNodeModule);
     logger.debug('fetched module', name, version, module);
     return processedNodeModule;
   }
@@ -286,7 +435,6 @@ export class ModuleRegistry {
     if (!release) logger.warn(`esm.sh fallback "${name}@${range}": release unknown, package assets unavailable`);
     const module = synthesizeEsmFallbackModule(name, range, transformed.code, transformed.deps, release);
     const processedNodeModule = new NodeModule(name, range, module.f, module.m, release?.release ?? null);
-    this.modules.set(name, processedNodeModule);
     logger.debug('resolved module via esm.sh fallback (shared-React transpile)', name, range, entryUrl);
     return processedNodeModule;
   }
@@ -302,9 +450,19 @@ export class ModuleRegistry {
 
     const cacheKey = `${name}::${source}::${version}`;
     let promise = this.moduleDownloadPromises.get(cacheKey);
-    if (!promise) {
-      promise = this._fetchModule(name, version, source).finally(() => this.moduleDownloadPromises.delete(cacheKey));
-      this.moduleDownloadPromises.set(cacheKey, promise);
+    if (!promise || this.cancelledDownloads.has(promise)) {
+      const download: Promise<NodeModule> = this._fetchModule(name, version, source)
+        .then((nodeModule) => {
+          // A download a failed install rolled back must not register late.
+          if (!this.cancelledDownloads.has(download)) this.modules.set(name, nodeModule);
+          return nodeModule;
+        })
+        .finally(() => {
+          this.cancelledDownloads.delete(download);
+          if (this.moduleDownloadPromises.get(cacheKey) === download) this.moduleDownloadPromises.delete(cacheKey);
+        });
+      this.moduleDownloadPromises.set(cacheKey, download);
+      promise = download;
     }
     return promise;
   }

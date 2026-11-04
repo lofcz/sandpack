@@ -3,7 +3,6 @@ import urlJoin from 'url-join';
 
 import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
 import { DepMap } from '.';
-import { FetchError } from '../../errors/FetchError';
 
 // Package CDN root — self-hosted only (Priprava `/sandpack-cdn/`). Never a
 // public third-party CDN. Resolution order:
@@ -73,67 +72,33 @@ export interface IResolvedDependency {
 
 // Exported so the lockset check (lockset.ts) can reject locksets resolved
 // against a different CDN protocol version.
-export const CDN_VERSION = 5;
+export const CDN_VERSION = 6;
 
 function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
-}
-
-/** `details` of the package service's not-found errors: the `ServerError` variant. */
-const PACKAGE_NOT_FOUND_ERRORS = ['PackageNotFound', 'PackageVersionNotFound', 'NpmManifestDownloadError'];
-
-/** The package service resolved the request and reported a missing package or version
- *  (`{ status, message, details }`), as opposed to a proxy, or an older service whose
- *  router has no such route and answers `{ details: "Not found" }` (prod 2026-11-01). */
-function answeredByService(error: FetchError): boolean {
-  try {
-    const body = JSON.parse(error.text);
-    return (
-      body?.status === error.status &&
-      typeof body.message === 'string' &&
-      typeof body.details === 'string' &&
-      PACKAGE_NOT_FOUND_ERRORS.some((variant) => body.details.startsWith(variant))
-    );
-  } catch {
-    return false;
-  }
 }
 
 /** Keep requests below proxy path-segment limits without splitting dependency resolution. */
 async function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
   const encoded = encodePayload(payload);
   const segment = encodeURIComponent(encoded);
-  const path = segment.length <= 240 ? `/${endpoint}/${segment}` : `/${endpoint}`;
-  try {
-    return await retryFetch(urlJoin(cdnRoot(), path), {
-    ...(segment.length > 240
-      ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: encoded }
-      : {}),
+  const long = segment.length > 240;
+  return retryFetch(urlJoin(cdnRoot(), long ? `/${endpoint}` : `/${endpoint}/${segment}`), {
+    ...(long ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: encoded } : {}),
     maxRetries: 5,
     retryDelay: 1000,
-    });
-  } catch (error) {
-    // A rolling deployment can serve the new bundler before the CDN has the
-    // body routes. Preserve the whole dependency graph when using the legacy
-    // transport; splitting it can silently change peer dependency resolution.
-    // A 404 can also mean "version not found"; only a missing route warrants the legacy URL.
-    if (segment.length > 240 && error instanceof FetchError && [404, 405].includes(error.status) && !answeredByService(error)) {
-      try {
-        return await retryFetch(urlJoin(cdnRoot(), `/${endpoint}/${segment}`));
-      } catch {
-        throw new Error(
-          `Package service transport unavailable (${endpoint}): POST is unsupported and the legacy URL failed. ` +
-          'The host must update the package service/proxy together with the bundler. ' +
-          'Keep the saved source and dependencies; rewriting the material will not repair this service failure.',
-        );
-      }
-    }
-    throw error;
-  }
+  });
 }
 
-export async function fetchManifest(deps: DepMap): Promise<IResolvedDependency[]> {
-  const result = await fetchPayload('dep_tree', JSON.stringify(deps));
+/**
+ * Resolve `deps` (the packages to install) to a flat tree. `pins` fix a name's
+ * range wherever it appears in that tree — the app's declared map plus what is
+ * already installed — so a declared package reached only transitively (a peer)
+ * still gets the app's version, and a later batch never re-resolves an
+ * installed package to a different one.
+ */
+export async function fetchManifest(deps: DepMap, pins: DepMap = {}): Promise<IResolvedDependency[]> {
+  const result = await fetchPayload('dep_tree', JSON.stringify({ deps, pins }));
   const buffer = await result.arrayBuffer();
   return decodeMsgPack(buffer) as IResolvedDependency[];
 }

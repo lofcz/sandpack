@@ -8,6 +8,12 @@ export interface IDependencyEvent {
   specifier: string;
 }
 
+export interface TranspileResult {
+  code: string | null;
+  dependencies: string[];
+  error: any;
+}
+
 export class Module {
   id: string;
   filepath: string;
@@ -55,6 +61,17 @@ export class Module {
     if (this.compiled != null || this.compilationError != null) {
       return;
     }
+    await this.adopt(await this.transpile());
+  }
+
+  /**
+   * Run this module's transformer chain without resolving anything: the code it
+   * produces and the raw specifiers it depends on. `code` is null when a
+   * transformer threw; `error` is a stage's reported error (its partial code
+   * is kept, as compile always did).
+   */
+  async transpile(): Promise<TranspileResult> {
+    const dependencies: string[] = [];
     try {
       const preset = this.bundler.preset;
       if (!preset) {
@@ -77,22 +94,27 @@ export class Module {
         );
 
         if (transformationResult instanceof BundlerError) {
-          this.compilationError = transformationResult;
-          break;
-        } else {
-          code = transformationResult.code;
-          await Promise.all(
-            Array.from(transformationResult.dependencies).map((d) => {
-              return this.addDependency(d);
-            })
-          );
+          return { code, dependencies, error: transformationResult };
         }
+        code = transformationResult.code;
+        dependencies.push(...transformationResult.dependencies);
       }
+      return { code, dependencies, error: null };
+    } catch (err: any) {
+      return { code: null, dependencies, error: err };
+    }
+  }
 
-      this.compiled = code;
+  /** Complete compilation from a transpile result: register its dependencies. */
+  async adopt(result: TranspileResult): Promise<void> {
+    try {
+      await Promise.all(result.dependencies.map((d) => this.addDependency(d)));
     } catch (err: any) {
       this.compilationError = err;
+      return;
     }
+    if (result.error != null) this.compilationError = result.error;
+    if (result.code != null) this.compiled = result.code;
   }
 
   resetCompilation(): void {

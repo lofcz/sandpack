@@ -10,6 +10,8 @@
  * (jsdom: importing ModuleRegistry transitively loads the evaluation runtime,
  * which references `window`/`self` at module scope.)
  */
+import { computeRequestDepMap, importedPackages } from '@lofcz/transpiler';
+
 import { ModuleRegistry } from '.';
 import { Bundler } from '../bundler';
 import {
@@ -118,7 +120,7 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     const fetcher = jest.fn<Promise<string>, [string]>().mockResolvedValue(LUCIDE_MJS);
     const r = registry(fetcher);
 
-    await r.fetchManifest({ ...DEPS });
+    await r.fetchManifest({ ...DEPS }, { ...DEPS });
     expect(r.manifest.map((d) => d.n)).toContain('lucide-react');
     await r.preloadModules();
 
@@ -140,22 +142,23 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
   it('surfaces a clear error (not a silent undefined) when esm.sh also fails', async () => {
     const fetcher = jest.fn<Promise<string>, [string]>().mockRejectedValue(new Error('HTTP 404'));
     const r = registry(fetcher);
-    await r.fetchManifest({ ...DEPS });
+    await r.fetchManifest({ ...DEPS }, { ...DEPS });
     await expect(r.preloadModules()).rejects.toThrow(/Could not resolve "lucide-react@\^1\.21\.0".*esm\.sh fallback.*404/);
   });
 
-  it('does not send declaration packages to the runtime CDN or its fallback', async () => {
+  it('never sends declared-but-unimported packages to the runtime CDN or its fallback', async () => {
     const fetcher = jest.fn<Promise<string>, [string]>();
     const r = registry(fetcher);
-    await r.fetchManifest({ react: '^19.2.5', '@types/react': '^19.2.5', '@types/example__widget': '^1.0.0' });
+    const declared = { react: '^19.2.5', '@types/react': '^19.2.5', '@types/example__widget': '^1.0.0', vite: '^7.0.0' };
+    await r.fetchManifest(declared, computeRequestDepMap(declared, importedPackages(['react', 'react/jsx-runtime']), []));
     await r.preloadModules();
-    expect(mockedFetchManifest).toHaveBeenCalledWith({ react: '^19.2.5' });
+    expect(mockedFetchManifest).toHaveBeenCalledWith({ react: '^19.2.5' }, declared);
     expect(fetcher).not.toHaveBeenCalled();
-    expect(r.manifest.some((d) => d.n.startsWith('@types/'))).toBe(false);
+    expect(r.manifest.some((d) => d.n.startsWith('@types/') || d.n === 'vite')).toBe(false);
   });
 
   it('with the fallback disabled, a dropped package fails fast via the resolution guard', async () => {
     const r = registry(null);
-    await expect(r.fetchManifest({ ...DEPS })).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
+    await expect(r.fetchManifest({ ...DEPS }, { ...DEPS })).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
   });
 });

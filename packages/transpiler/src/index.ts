@@ -50,11 +50,17 @@ export type { FrontmatterParseResult } from './mdx/frontmatter';
 export { textSlug, sectionId } from '@immediately-run/mdx-plugins';
 export type { HeadingAnchorOptions } from '@immediately-run/mdx-plugins';
 
-// Dependency-map facts the CLI needs to compute the lockset input, plus the
-// resolution-completeness guard shared with the sandbox runtime + CLI builder.
-export { computeInputDepMap, assertDependenciesResolved } from './depmap';
+// Dependency-map facts the CLI needs to compute the lockset (declared echo +
+// import-driven request), plus the resolution-completeness guard shared with
+// the sandbox runtime + CLI builder.
+export {
+  computeDeclaredDepMap,
+  computeRequestDepMap,
+  packageName,
+  importedPackages,
+  assertDependenciesResolved,
+} from './depmap';
 export type { DepMap, ResolvedDependency } from './depmap';
-export { filterBuildDeps, isBuildDep } from './presets/build-dep';
 
 // Toolchain stamping.
 export { computeToolchainHash } from './toolchainHash';

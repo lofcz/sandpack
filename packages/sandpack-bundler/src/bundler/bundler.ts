@@ -9,7 +9,9 @@ import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
-import { isTransformable } from '@lofcz/transpiler';
+import { computeRequestDepMap, importedPackages, isTransformable, packageName } from '@lofcz/transpiler';
+import { cssModuleSpecifiers } from '@lofcz/transpiler/css';
+import { ModuleNotFoundError } from '../errors/ModuleNotFound';
 import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
@@ -23,11 +25,12 @@ import { replaceHTML } from '../utils/html';
 import * as logger from '../utils/logger';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
-import { ModuleRegistry } from './module-registry';
+import { DepMap, ModuleRegistry } from './module-registry';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
-import { Module } from './module/Module';
+import { scanLocalImports } from './importScan';
+import { Module, TranspileResult } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
@@ -131,6 +134,8 @@ const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
     return null;
   }
 
+const DEFAULT_EXTENSIONS = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'];
+
 export class Bundler {
   private lastHTML: string | null = null;
   // Public so transformers reached via `Transformer#init(bundler)` can use the
@@ -204,6 +209,10 @@ export class Bundler {
   // first compile; evaluated in the first-load branch of the evaluate callback.
   private sideEffectModulePaths: string[] = [];
 
+  // Transform results the boot scan produced (`scanModuleSpecifiers`), keyed by
+  // path with the source they were made from; compile adopts each once.
+  private bootTranspiles = new Map<string, { source: string; result: TranspileResult }>();
+
   private readonly mountLifecycle = new MountLifecycle();
   private onMetadataChangeEmitter = new DelayedEmitter<MetadataChange>();
   onMetadataChange = this.onMetadataChangeEmitter.event;
@@ -211,7 +220,6 @@ export class Bundler {
   private onStatusChangeEmitter = new Emitter<BundlerStatus>();
   onStatusChange = this.onStatusChangeEmitter.event;
 
-  private _previousDepString: string | null = null;
   // Injectable RegistryFS lazy-fetch function (the G0-0 harness injects a network
   // spy so a test can observe lazy unpkg fetches). Undefined → RegistryFS uses its
   // built-in `retryFetch`-through-the-parent-cache default.
@@ -460,40 +468,184 @@ export class Bundler {
     }
   }
 
-  async loadNodeModules() {
+  /**
+   * The app's declared DepMap: package.json dependencies minus self-hosted
+   * (resolveFromRegistry) modules, plus the preset's implicit deps. It only
+   * supplies versions — what installs is what the app imports.
+   */
+  private declaredDependencies(): DepMap {
     if (!this.parsedPackageJSON) {
       throw new BundlerError('No parsed pkg.json found!');
     }
+    // Self-hosted modules are already registered as local modules by
+    // addLocalModules; strip them so the CDN /dep_tree/ query never has to
+    // resolve them (immune to npm→CDN replication lag). Their own transitive deps
+    // are added by the preset augmentation below regardless.
+    const registryResolved = this.registryResolvedNames();
+    const dependencies = Object.fromEntries(
+      Object.entries(this.parsedPackageJSON.dependencies ?? {}).filter(([name]) => !registryResolved.has(name))
+    );
+    return this.requirePreset().augmentDependencies(dependencies);
+  }
 
-    let dependencies = this.parsedPackageJSON.dependencies;
-    if (dependencies) {
-      // Self-hosted (resolveFromRegistry) modules are already registered as
-      // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
-      // never has to resolve them (immune to npm→CDN replication lag). Their own
-      // transitive deps are added by the preset augmentation below regardless.
-      const registryResolved = this.registryResolvedNames();
-      if (registryResolved.size) {
-        dependencies = Object.fromEntries(
-          Object.entries(dependencies).filter(([name]) => !registryResolved.has(name))
-        );
-      }
-      dependencies = nullthrows(
-        this.preset,
-        'Preset needs to be defined when loading node modules'
-      ).augmentDependencies(dependencies);
+  private requirePreset(): Preset {
+    return nullthrows(this.preset, 'Preset needs to be defined when loading node modules');
+  }
 
-      await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset());
+  /**
+   * Install the declared packages the app is known to import at boot, in one
+   * request: the preset's implicit deps, every specifier recorded by seeded
+   * artifacts, and the package imports a scan of the local module graph finds
+   * (or the sidecar lockset's own request). Imports discovered later while
+   * compiling install on demand (`resolveAsync`).
+   */
+  async loadNodeModules() {
+    // Without a dependencies field there is nothing to version an install.
+    if (!this.parsedPackageJSON?.dependencies) return;
+    const declared = this.declaredDependencies();
+    const implicit = Object.keys(this.requirePreset().augmentDependencies({}));
+    const request = computeRequestDepMap(
+      declared,
+      importedPackages([...this.artifactStore.recordedSpecifiers(), ...(await this.scanEntryImports())]),
+      implicit,
+    );
 
-      // Load all modules
-      await this.moduleRegistry.preloadModules();
-      await this.moduleRegistry.loadModuleDependencies();
+    await this.moduleRegistry.fetchManifest(declared, request, await this.readSidecarLockset());
+
+    // Load all modules
+    await this.moduleRegistry.preloadModules();
+    await this.moduleRegistry.loadModuleDependencies();
+    // The scan above looked these packages up before they existed.
+    this.forgetMissingNodeModules();
+  }
+
+  /**
+   * The package imports of the local module graph, scanned from the roots
+   * compile starts at: the render entry and the side-effect imports of the
+   * `src/main` shim (`collectLocalEntrySideEffects`, as compile applies them).
+   */
+  private async scanEntryImports(): Promise<string[]> {
+    const resolveLocal = (specifier: string, from: string) => this.resolveInstalled(specifier, from, DEFAULT_EXTENSIONS);
+    const readFile = (path: string) => this.fs.readFileAsync(path);
+    let entryPoint: string;
+    try {
+      entryPoint = await this.resolveEntryPoint();
+    } catch {
+      return []; // compile reports the missing entry
     }
+    const { sideEffectModules } = await collectLocalEntrySideEffects({ entryPoint, resolve: resolveLocal, readFile });
+    return scanLocalImports({
+      entries: [entryPoint, ...sideEffectModules],
+      appRoot: APP_ROOT,
+      moduleSpecifiers: (path) => this.scanModuleSpecifiers(path),
+      resolveLocal,
+    });
+  }
+
+  /**
+   * A module's raw dependency specifiers for the boot scan. App modules run the
+   * real transform chain — the same specifiers compile will resolve — and keep
+   * the result, which compile adopts instead of transforming again.
+   * Stylesheets report their package imports (their transform resolves
+   * `@import`s inline, so it can only run once packages are installed).
+   */
+  private async scanModuleSpecifiers(path: string): Promise<string[]> {
+    const source = await this.fs.readFileAsync(path);
+    if (path.endsWith('.css')) return cssModuleSpecifiers(source);
+    if (!isTransformable(path)) return [];
+    const result = await new Module(path, source, false, this).transpile();
+    this.bootTranspiles.set(path, { source, result });
+    return result.dependencies;
+  }
+
+  /**
+   * A package.json edit only forces a reload when it changes the version of an
+   * installed package (the flat install holds one version per name). Anything
+   * else — new dependencies, removed unused ones — is adopted in place.
+   */
+  private installedDependencyChanged(declared: DepMap): boolean {
+    for (const name of this.moduleRegistry.modules.keys()) {
+      if (this.moduleRegistry.declaredRange(name) !== declared[name]) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The declared package a failed resolution should install: a bare import of a
+   * declared package that isn't installed yet, from code the CDN did not
+   * resolve — app sources, the self-hosted SDK, runtimes. A CDN package's own
+   * imports are the CDN's job (`/dep_tree` + the used-module closure), so they
+   * never install anything (its tooling-only files may require anything).
+   */
+  private installableImport(specifier: string, filename: string, err: unknown): string | null {
+    if (!(err instanceof ModuleNotFoundError) || this.inCdnPackage(filename)) return null;
+    const name = packageName(specifier);
+    if (!name || this.moduleRegistry.modules.has(name)) return null;
+    if (!this.moduleRegistry.isDeclared(name)) {
+      err.message += ` — "${name}" is not listed in package.json dependencies`;
+      return null;
+    }
+    return name;
+  }
+
+  /** Whether `filename` is a file of a CDN-installed package. */
+  private inCdnPackage(filename: string): boolean {
+    const at = filename.lastIndexOf('/node_modules/');
+    if (at < 0) return false;
+    const owner = packageName(filename.slice(at + '/node_modules/'.length));
+    return owner !== null && this.moduleRegistry.modules.has(owner);
+  }
+
+  /** Drop every cache entry for a package a failed install rolled back. */
+  forgetNodeModule(name: string): void {
+    const prefix = `/node_modules/${name}/`;
+    for (const path of [...this.resolverCache.keys()]) {
+      if (path.startsWith(prefix)) this.resolverCache.delete(path);
+    }
+    for (const path of [...this.modules.keys()]) {
+      if (path.startsWith(prefix)) this.modules.delete(path);
+    }
+    this.fs.forgetPrefix(prefix);
+  }
+
+  /** Drop cached absences under `/node_modules` after an install. */
+  private forgetMissingNodeModules(): void {
+    for (const [path, content] of this.resolverCache) {
+      if (content === false && path.includes('/node_modules/')) this.resolverCache.delete(path);
+    }
+    this.fs.forgetMissing('/node_modules/');
   }
 
   async resolveAsync(
     specifier: string,
     filename: string,
-    extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx']
+    extensions: string[] = DEFAULT_EXTENSIONS
+  ): Promise<string> {
+    // An install in flight may have made a package visible before its
+    // dependency closure; code outside CDN packages waits for it to settle (a
+    // CDN package's own imports run inside that install and must not).
+    if (packageName(specifier) && !this.inCdnPackage(filename)) {
+      const idle = this.moduleRegistry.whenIdle();
+      if (idle) {
+        await idle.catch(() => undefined);
+        this.forgetMissingNodeModules();
+      }
+    }
+    try {
+      return await this.resolveInstalled(specifier, filename, extensions);
+    } catch (err) {
+      const name = this.installableImport(specifier, filename, err);
+      if (!name) throw err;
+      await this.moduleRegistry.ensurePackages([name]);
+      this.forgetMissingNodeModules();
+      return this.resolveInstalled(specifier, filename, extensions);
+    }
+  }
+
+  private async resolveInstalled(
+    specifier: string,
+    filename: string,
+    extensions: string[]
   ): Promise<string> {
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node
@@ -607,7 +759,13 @@ export class Bundler {
       this.modules.set(path, module);
     }
     this.refreshMetadata(path, module.source);
-    await module.compile();
+    const scanned = this.bootTranspiles.get(path);
+    this.bootTranspiles.delete(path);
+    if (scanned && scanned.source === module.source && module.compiled == null && module.compilationError == null) {
+      await module.adopt(scanned.result);
+    } else {
+      await module.compile();
+    }
     // §5.3 write-through: cache a live-transpiled covered source so an in-session
     // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
     if (module.compiled != null && module.compilationError == null && isTransformable(path)) {
@@ -876,7 +1034,7 @@ export class Bundler {
    * registered as local modules). They must be removed from the dependency map
    * before the sandpack-CDN `/dep_tree/` query — otherwise an SDK version not yet
    * replicated npm→CDN would fail resolution for the whole app. Mirrors the CLI
-   * lockset's `computeInputDepMap` stripping so the lockset echo-match still
+   * lockset's `computeDeclaredDepMap` stripping so the lockset echo-match still
    * holds. Self-hosting is implicit, so every `SELF_HOST_BASES` key is stripped.
    */
   private registryResolvedNames(): Set<string> {
@@ -1058,19 +1216,34 @@ export class Bundler {
       await this.processPackageJSON();
       bootLap('processPackageJSON');
 
-      const depString = Object.entries(this.parsedPackageJSON?.dependencies || {})
-        .map((v) => `${v[0]}:${v[1]}`)
-        .sort()
-        .join(',');
+      if (this.isFirstLoad) {
+        // §5.1 seed `/transpiled` from the cache zip's pre-transpiled artifacts
+        // before installing node modules: their recorded specifiers are the boot
+        // install's import set, and covered sources are consulted (not
+        // transpiled) during traversal. Absent/invalid/stamp-mismatched artifacts
+        // are a no-op (live boot).
+        const seedResult = await this.artifactStore.seed({
+          dirtySet: this.dirtyPaths,
+          writableLayer: this.dirtyPaths,
+        });
+        if (seedResult.securityReject) {
+          // §8.14: a seeding input was present in the writable layer — the whole
+          // section is rejected (live transpile for everything this session).
+          logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
+        } else if (seedResult.seeded > 0) {
+          logger.debug(`Seeded ${seedResult.seeded} pre-transpiled artifacts into /transpiled`);
+        }
+        bootLap('seedArtifacts');
 
-      if (this._previousDepString != null && depString !== this._previousDepString) {
-        return this.beginReload('Dependencies changed, reloading');
+        await this.loadNodeModules();
+        bootLap('loadNodeModules');
+      } else {
+        const declared = this.declaredDependencies();
+        if (this.installedDependencyChanged(declared)) {
+          return this.beginReload('Dependencies changed, reloading');
+        }
+        this.moduleRegistry.setDeclared(declared);
       }
-
-      this._previousDepString = depString;
-
-      await this.loadNodeModules();
-      bootLap('loadNodeModules');
 
       // R3-46 diagnostic: one console line breaking down the boot→deps span by
       // sub-phase, so the next live run shows which await dominates cold boot.
@@ -1100,23 +1273,6 @@ export class Bundler {
       for (const runtime of this.runtimes) {
         await this.transformModule(runtime);
         await this.moduleFinishedPromise(runtime);
-      }
-    }
-
-    // §5.1 seed `/transpiled` from the cache zip's pre-transpiled artifacts before
-    // entrypoint traversal, so covered sources are consulted (not transpiled)
-    // below. Absent/invalid/stamp-mismatched artifacts are a no-op (live boot).
-    if (this.isFirstLoad) {
-      const seedResult = await this.artifactStore.seed({
-        dirtySet: this.dirtyPaths,
-        writableLayer: this.dirtyPaths,
-      });
-      if (seedResult.securityReject) {
-        // §8.14: a seeding input was present in the writable layer — the whole
-        // section is rejected (live transpile for everything this session).
-        logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
-      } else if (seedResult.seeded > 0) {
-        logger.debug(`Seeded ${seedResult.seeded} pre-transpiled artifacts into /transpiled`);
       }
     }
 
@@ -1162,6 +1318,8 @@ export class Bundler {
         }
       }
       this.sideEffectModulePaths = applied;
+      // The graph is compiled; scan results it never reached are stale.
+      this.bootTranspiles.clear();
     }
 
     const transpiledModules = Array.from(this.modules, ([name, value]) => {

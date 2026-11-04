@@ -77,8 +77,8 @@ export function selectReactChain(filepath: string): ReactChain | null {
 /**
  * The react preset's dependency augmentation, moved verbatim from
  * `ReactPreset.augmentDependencies`. The CLI needs this to compute the same
- * input DepMap the runtime resolves (`computeInputDepMap`). Mutates and returns
- * the passed map, matching the sandbox.
+ * declared DepMap the runtime resolves against (`computeDeclaredDepMap`).
+ * Mutates and returns the passed map, matching the sandbox.
  */
 export function augmentDependencies(dependencies: DepMap): DepMap {
   if (!dependencies['react-refresh']) {

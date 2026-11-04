@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeCss, cssNeedsTailwind } from '../dist/css.js';
+import { analyzeCss, cssModuleSpecifiers, cssNeedsTailwind } from '../dist/css.js';
 
 for (const css of [
   '@import "tailwindcss";',
@@ -106,4 +106,20 @@ test('restores inherited import conditions without dropping compiler options', (
   const result = analyzeCss('@import "tailwindcss/utilities" source(none);');
   const resolved = result.resolverCss.slice(0, -1) + ' layer(shell) supports(display:grid) print;';
   assert.equal(result.restoreImports(resolved), '@layer shell {@supports (display:grid) {@media print {@import "tailwindcss/utilities" source(none);}}}');
+});
+
+test('cssModuleSpecifiers: package imports plus the Tailwind compiler, never compiler imports', () => {
+  const css = [
+    '@import "@fontsource/inter/400.css";',
+    "@import url('katex/dist/katex.min.css') layer(base);",
+    '@import "./local.css";',
+    '@import "tailwindcss";',
+  ].join('\n');
+  assert.deepEqual(cssModuleSpecifiers(css), [
+    '@fontsource/inter/400.css',
+    'katex/dist/katex.min.css',
+    './local.css',
+    '@tailwindcss/browser',
+  ]);
+  assert.deepEqual(cssModuleSpecifiers('a { color: red; }'), []);
 });

@@ -20,9 +20,9 @@ jest.mock('./module-cdn', () => ({
 
 const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
 
-// A realistic resolved set: every declared dep present at depth 0 (the registry
-// now enforces this completeness on the lockset path too — a lockset missing a
-// declared dep is the silent-drop bug it guards against), plus a transitive.
+// A realistic resolved set: every requested dep present at depth 0 (the registry
+// enforces this completeness on the lockset path too — a lockset missing a
+// requested dep is the silent-drop bug it guards against), plus a transitive.
 const RESOLVED = [
   { n: 'core-js', v: '3.22.7', d: 0 },
   { n: 'react', v: '18.3.1', d: 0 },
@@ -31,8 +31,8 @@ const RESOLVED = [
   { n: 'scheduler', v: '0.23.0', d: 1 },
 ];
 
-// The input DepMap as loadNodeModules computes it for { react: ^18.2.0 } under
-// the react preset (augmented; no build deps present).
+// The request loadNodeModules computes for an app importing react under the
+// react preset (implicit deps + the imported package).
 const DEPS = {
   'core-js': '3.22.7',
   react: '^18.2.0',
@@ -40,9 +40,13 @@ const DEPS = {
   'react-refresh': '^0.11.0',
 };
 
+// The declared map behind it: tooling and types are declared but never imported.
+const DECLARED = { ...DEPS, vite: '^5.0.0', '@types/react': '^18.2.0' };
+
 const lockset = (overrides: Record<string, unknown> = {}) => ({
   cdnVersion: CDN_VERSION,
-  dependencies: { ...DEPS },
+  dependencies: { ...DECLARED },
+  requested: { ...DEPS },
   resolved: RESOLVED,
   ...overrides,
 });
@@ -58,6 +62,7 @@ describe('validateLockset', () => {
     ['wrong cdnVersion', lockset({ cdnVersion: CDN_VERSION + 1 })],
     ['non-string range', lockset({ dependencies: { react: 18 } })],
     ['dependencies array', lockset({ dependencies: ['react'] })],
+    ['missing requested', lockset({ requested: undefined })],
     ['malformed resolved entry', lockset({ resolved: [{ n: 'react', v: 18, d: 0 }] })],
     ['resolved not an array', lockset({ resolved: {} })],
   ])('rejects %s', (_label, value) => {
@@ -65,9 +70,22 @@ describe('validateLockset', () => {
   });
 });
 
-describe('locksetClosureValid (PT-2: no injected top-level package)', () => {
-  it('accepts a lockset whose depth-0 entries are all declared', () => {
-    expect(locksetClosureValid(lockset())).toBe(true); // react d0 ∈ declared
+describe('locksetClosureValid (PT-2: no injected package)', () => {
+  it('accepts a declared request whose depth-0 entries are all requested', () => {
+    expect(locksetClosureValid(lockset())).toBe(true);
+  });
+
+  it('rejects a request for an undeclared package', () => {
+    expect(locksetClosureValid(lockset({ requested: { ...DEPS, 'evil-pkg': '1.0.0' } }) as never)).toBe(false);
+  });
+
+  it('rejects a request outside the declared range', () => {
+    expect(locksetClosureValid(lockset({ requested: { ...DEPS, react: '^19.0.0' } }) as never)).toBe(false);
+  });
+
+  it('rejects a depth-0 entry the request never named, even if declared', () => {
+    const widened = lockset({ resolved: [...RESOLVED, { n: 'vite', v: '5.0.0', d: 0 }] });
+    expect(locksetClosureValid(widened as never)).toBe(false);
   });
 
   it('rejects a lockset with an injected top-level package not in declared deps', () => {
@@ -113,32 +131,33 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
 
   it('uses a matching lockset and skips the dep_tree request', async () => {
     const r = registry();
-    await r.fetchManifest({ ...DEPS }, true, lockset());
+    await r.fetchManifest({ ...DECLARED }, { ...DEPS }, lockset());
     expect(r.manifest).toEqual(RESOLVED);
     expect(mockedFetchManifest).not.toHaveBeenCalled();
   });
 
-  it('matches against the post-filter DepMap (build deps stripped)', async () => {
+  it("adopts the lockset's request over the runtime's own import set", async () => {
     const r = registry();
-    // vite is a build dep: filtered out before comparison, so the lockset
-    // (computed over the filtered map) still matches.
-    await r.fetchManifest({ ...DEPS, vite: '^5.0.0' }, true, lockset());
+    // A live boot without seeded artifacts only knows the implicit deps; the
+    // lockset (the CLI's full import scan) still applies.
+    const implicitOnly = { 'core-js': '3.22.7', 'react-error-boundary': '^6.1.0', 'react-refresh': '^0.11.0' };
+    await r.fetchManifest({ ...DECLARED }, implicitOnly, lockset());
     expect(r.manifest).toEqual(RESOLVED);
     expect(mockedFetchManifest).not.toHaveBeenCalled();
   });
 
   it('resolves live when the dependency echo mismatches (edited deps)', async () => {
     const r = registry();
-    await r.fetchManifest({ ...DEPS, zod: '^3.0.0' }, true, lockset());
+    await r.fetchManifest({ ...DECLARED, zod: '^3.0.0' }, { ...DEPS, zod: '^3.0.0' }, lockset());
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
     // Live resolution, not the lockset's RESOLVED: includes the edited-in dep.
     expect(r.manifest.map((d) => d.n)).toContain('zod');
   });
 
-  it('resolves live with no lockset', async () => {
+  it('resolves live with no lockset, pinning the whole declared map', async () => {
     const r = registry();
-    await r.fetchManifest({ ...DEPS }, true, undefined);
-    expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
+    await r.fetchManifest({ ...DECLARED }, { ...DEPS }, undefined);
+    expect(mockedFetchManifest).toHaveBeenCalledWith(DEPS, expect.objectContaining(DECLARED));
   });
 
   it('rejects a lockset with an injected root and resolves live (PT-2)', async () => {
@@ -146,24 +165,25 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     // Echo matches the declared deps, but `resolved` smuggles an extra
     // top-level package — the whole lockset is rejected, not partially trusted.
     const poisoned = lockset({ resolved: [...RESOLVED, { n: 'evil-pkg', v: '1.0.0', d: 0 }] });
-    await r.fetchManifest({ ...DEPS }, true, poisoned as never);
+    await r.fetchManifest({ ...DECLARED }, { ...DEPS }, poisoned as never);
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
     // Came from live resolution, not the rejected lockset (no smuggled evil-pkg).
     expect(r.manifest.map((d) => d.n)).not.toContain('evil-pkg');
     expect(r.manifest.map((d) => d.n)).toEqual(Object.keys(DEPS).sort());
   });
 
-  it('catches a lockset MISSING a declared dep (baked-in CDN drop), not silently skipping it', async () => {
+  it('catches a lockset MISSING a requested dep (baked-in CDN drop), not silently skipping it', async () => {
     // Fallback disabled (null) to isolate the completeness guard: the CLI builds
     // the sidecar lockset against the SAME primary CDN, so a CDN drop is frozen
     // out of `resolved`. The echo matches and closure passes (closure only rejects
-    // INJECTED roots), so this would silently skip before — now the guard fires on
-    // the lockset path too. (With the fallback enabled it would instead route the
-    // dropped dep to esm.sh; that path is covered in esmFallback.test.ts.)
+    // INJECTED roots), so the guard must fire on the lockset path too. (With the
+    // fallback enabled it would instead route the dropped dep to esm.sh; that
+    // path is covered in esmFallback.test.ts.)
     const r = new ModuleRegistry({} as Bundler, null);
-    const deps = { ...DEPS, 'lucide-react': '^1.21.0' };
-    const incomplete = lockset({ dependencies: { ...deps } }); // resolved=RESOLVED lacks lucide-react
-    await expect(r.fetchManifest(deps, true, incomplete)).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
+    const declared = { ...DECLARED, 'lucide-react': '^1.21.0' };
+    const requested = { ...DEPS, 'lucide-react': '^1.21.0' };
+    const incomplete = lockset({ dependencies: declared, requested }); // resolved=RESOLVED lacks lucide-react
+    await expect(r.fetchManifest(declared, requested, incomplete)).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
     expect(mockedFetchManifest).not.toHaveBeenCalled(); // lockset echo matched; no live fetch attempted
   });
 });
