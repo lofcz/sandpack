@@ -144,6 +144,16 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     await expect(r.preloadModules()).rejects.toThrow(/Could not resolve "lucide-react@\^1\.21\.0".*esm\.sh fallback.*404/);
   });
 
+  it('does not send declaration packages to the runtime CDN or its fallback', async () => {
+    const fetcher = jest.fn<Promise<string>, [string]>();
+    const r = registry(fetcher);
+    await r.fetchManifest({ react: '^19.2.5', '@types/react': '^19.2.5', '@types/example__widget': '^1.0.0' });
+    await r.preloadModules();
+    expect(mockedFetchManifest).toHaveBeenCalledWith({ react: '^19.2.5' });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(r.manifest.some((d) => d.n.startsWith('@types/'))).toBe(false);
+  });
+
   it('with the fallback disabled, a dropped package fails fast via the resolution guard', async () => {
     const r = registry(null);
     await expect(r.fetchManifest({ ...DEPS })).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);

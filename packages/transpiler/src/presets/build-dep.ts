@@ -7,6 +7,8 @@ import type { DepMap } from '../depmap';
 // filter when computing the lockset input (`computeInputDepMap`).
 const BUILD_DEPS = new Set(['parcel', 'parcel-bundler', 'vite', '@babel/core', 'react-scripts']);
 const BUILD_DEP_REGEXES = [
+  // DefinitelyTyped packages contain declarations, never executable modules.
+  /^@types\//,
   /babel-plugin.*/,
   /@babel\/plugin.*/,
   /babel-preset.*/,

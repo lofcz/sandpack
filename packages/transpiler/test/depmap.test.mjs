@@ -82,3 +82,11 @@ test('isBuildDep / filterBuildDeps', () => {
   assert.equal(isBuildDep('react'), false);
   assert.deepEqual(filterBuildDeps({ react: '^19', vite: '^5' }), { react: '^19' });
 });
+
+test('declaration packages stay out of runtime dependencies and locksets', () => {
+  const deps = { three: '0.160.0', '@types/three': '0.160.0', '@types/example__widget': '1.0.0' };
+  assert.deepEqual(filterBuildDeps(deps), { three: '0.160.0' });
+  const input = computeInputDepMap(deps);
+  assert.equal(input.three, '0.160.0');
+  assert.equal(Object.keys(input).some(name => name.startsWith('@types/')), false);
+});

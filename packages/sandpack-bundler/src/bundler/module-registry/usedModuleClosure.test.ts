@@ -6,7 +6,7 @@
  * `@tailwindcss/browser` on CDNs that inject external SWC helpers).
  */
 import { ModuleRegistry } from './index';
-import { fetchManifest, fetchModule } from './module-cdn';
+import { fetchManifest, fetchModule, ICDNModule } from './module-cdn';
 
 jest.mock('./module-cdn', () => ({
   CDN_VERSION: 5,
@@ -35,7 +35,7 @@ describe('ModuleRegistry used-module closure', () => {
       .mockResolvedValueOnce([{ n: '@tailwindcss/browser', v: '4.3.3', d: 0 }])
       .mockResolvedValueOnce([{ n: '@swc/helpers', v: '0.5.17', d: 1 }]);
 
-    mockedFetchModule.mockImplementation(async (name: string, version: string) => {
+    mockedFetchModule.mockImplementation(async (name: string): Promise<ICDNModule> => {
       if (name === '@tailwindcss/browser') {
         return {
           f: {
