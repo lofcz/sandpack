@@ -590,7 +590,7 @@ export class SandpackFS {
 
     for (const entry of entries) {
       const relPath = (relDir === "/" ? "" : relDir) + "/" + entry;
-      if (relPath.startsWith(META_DIR)) continue;
+      if (relPath === META_DIR) continue;
 
       const absEntry = this.toAbs(relPath);
       let isDir = false;

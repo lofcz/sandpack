@@ -382,6 +382,24 @@ describe("SandpackFS — out-of-band write guard (R3-110)", () => {
   });
 });
 
+describe("SandpackFS file listing", () => {
+  it("hides only the metadata directory, preserving similarly named project files", async () => {
+    const files = {
+      "/.sandpackrc": { code: "config" },
+      "/.sandpack-assets/logo.svg": { code: "<svg/>" },
+      "/src/.sandpack/example.ts": { code: "nested project file" },
+      "/App.tsx": { code: "app" },
+    };
+    const fs = await SandpackFS.fromFiles(files, {}, noopPortFactory);
+    try {
+      await fs.writeFile("/.sandpack/private.json", "{}");
+      expect(await fs.list()).toEqual(Object.keys(files).sort());
+    } finally {
+      fs.dispose();
+    }
+  });
+});
+
 describe("SandpackFS mount ownership", () => {
   it("unmounts a store it created and stops notifying after disposal", async () => {
     const before = new Set(mounts.keys());
