@@ -28,6 +28,11 @@ export class IFrameParentMessageBus {
   }
 
   private _messageListener(evt: MessageEvent) {
+    // The parent owns bootstrap config, ports, commands and protocol replies.
+    // Authenticate by WindowProxy, including for opaque-origin previews; the
+    // channel id below is correlation only, never proof of the sender.
+    if (evt.source !== window.parent) return;
+
     const data = evt.data;
 
     if (data && data.type === 'register-frame') {
@@ -91,7 +96,7 @@ export class IFrameParentMessageBus {
       return;
     }
 
-    if (!data || !data.codesandbox) {
+    if (!data || !data.codesandbox || this.parentId == null || data.$id !== this.parentId) {
       return;
     }
 

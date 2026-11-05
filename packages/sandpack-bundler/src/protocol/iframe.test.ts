@@ -9,6 +9,7 @@ import { IFrameParentMessageBus } from './iframe';
 const registerFrame = (extra: Record<string, unknown>) =>
   window.dispatchEvent(
     new MessageEvent('message', {
+      source: window.parent,
       data: { type: 'register-frame', id: 'frame-1', template: 'react', ...extra },
     }),
   );

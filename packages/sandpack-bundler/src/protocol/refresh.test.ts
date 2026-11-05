@@ -20,7 +20,7 @@ describe('refresh capability negotiation', () => {
 
   it.each([undefined, false, true])('supports hostControlledRefresh=%s', (capability) => {
     const bus = new IFrameParentMessageBus();
-    receive({ data: { type: 'register-frame', id: 'host-channel', hostControlledRefresh: capability } } as MessageEvent);
+    receive({ source: window.parent, data: { type: 'register-frame', id: 'host-channel', hostControlledRefresh: capability } } as MessageEvent);
     bus.requestRefresh();
     if (capability === true) {
       expect(reload).not.toHaveBeenCalled();
