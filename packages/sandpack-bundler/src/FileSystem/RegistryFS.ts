@@ -61,6 +61,11 @@ export class RegistryFS extends FileSystem {
   ) {
     // 0x52454753 = "REGS"; the name surfaces in zenfs diagnostics.
     super(0x52454753, 'registryfs');
+    // Reject VFS writes before they modify the shared vnode cache. Rejecting
+    // only in the backend leaves dirty bytes behind for later reads/flushes.
+    // CopyOnWrite has its own attributes, so its writable overlay stays writable.
+    // ZenFS 2.6.1 checks this flag at runtime but omits it from its attribute types.
+    (this.attributes as Map<string, unknown>).set('readonly', undefined);
   }
 
   // --- path parsing -------------------------------------------------------

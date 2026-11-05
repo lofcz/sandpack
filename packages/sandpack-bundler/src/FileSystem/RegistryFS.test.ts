@@ -211,6 +211,28 @@ describe('RegistryFS (mounted in a real ZenFS VFS)', () => {
 
   it('rejects an overwrite of an existing dependency file with EROFS', async () => {
     await expect(fs.promises.writeFile('/node_modules/react/index.js', 'hacked')).rejects.toMatchObject({ code: 'EROFS' });
+    // Rejection must happen before the VFS dirties its shared file cache. A
+    // backend-only rejection poisoned later reads and the background flusher.
+    expect(await fs.promises.readFile('/node_modules/react/index.js', 'utf8')).toBe('module.exports = React;');
+  });
+
+  it('rejects handle writes without changing bytes visible through another handle', async () => {
+    const handle = await fs.promises.open('/node_modules/react/index.js', 'r+');
+    try {
+      await expect(handle.write('hacked')).rejects.toMatchObject({ code: 'EROFS' });
+      expect(await fs.promises.readFile('/node_modules/react/index.js', 'utf8')).toBe('module.exports = React;');
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('rejects synchronous overwrites without changing the readable content', async () => {
+    // This async backend permits synchronous reads once content is cached.
+    await fs.promises.readFile('/node_modules/react/index.js', 'utf8');
+    expect(() => fs.writeFileSync('/node_modules/react/index.js', 'hacked')).toThrow(
+      expect.objectContaining({ code: 'EROFS' }),
+    );
+    expect(fs.readFileSync('/node_modules/react/index.js', 'utf8')).toBe('module.exports = React;');
   });
 
   it('rejects NEW-file creation under the mount with EROFS (not a silent drop)', async () => {
