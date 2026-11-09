@@ -87,6 +87,49 @@ export function importedPackages(specifiers: Iterable<unknown>): Set<string> {
 // dependency name => version range, same shape the runtime uses.
 export type DepMap = Record<string, string>;
 
+/** The package.json fields `rootRuntimeDependencies` reads. Everything else is
+ *  ignored, so a full parsed package.json satisfies it. */
+export interface RootPackageShape {
+  dependencies?: DepMap;
+  peerDependencies?: DepMap;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+}
+
+/**
+ * The dependency map a package AT THE ROOT OF A RUN resolves against (R3-289).
+ *
+ * For a package being *consumed*, `peerDependencies` is a request the consumer
+ * satisfy — and the bundler's library-mount path deliberately ignores peers for
+ * exactly that reason. But the package at the root of a run has no consumer: the
+ * platform is the environment, so a peer it declares and nobody fetches is
+ * simply absent. Two failure shapes, neither naming the cause:
+ *
+ *  1. the React preset injects `react-error-boundary` into every app, it imports
+ *     `react`, and an app whose ONLY react declaration is a peer dies with
+ *     `Cannot find module 'react'` (R3-289's Grove finding);
+ *  2. a peer-only `@immediately-run/sdk` pin never reaches self-host resolution
+ *     and silently falls back to the (very stale) platform default version.
+ *
+ * So at the root, non-optional peers are fetched like dependencies, with
+ * `dependencies` winning any name both declare and `peerDependenciesMeta`
+ * `.optional` entries skipped (npm's own semantics: an optional peer may be
+ * absent). Shared by the sandbox runtime (`loadNodeModules`) and the CLI
+ * cache-zip builder (the lockset input DepMap) so the runtime's echo-match
+ * against a zip's lockset holds — two implementations would silently degrade
+ * every peer-declaring app's zip to live resolution.
+ */
+export function rootRuntimeDependencies(pkg: RootPackageShape | undefined | null): DepMap {
+  const peers: DepMap = {};
+  const peerDeps = pkg?.peerDependencies ?? {};
+  const meta = pkg?.peerDependenciesMeta ?? {};
+  for (const [name, range] of Object.entries(peerDeps)) {
+    if (typeof range !== 'string') continue;
+    if (meta[name]?.optional) continue;
+    peers[name] = range;
+  }
+  return { ...peers, ...(pkg?.dependencies ?? {}) };
+}
+
 // One entry of the CDN's resolved flat dependency list (the `/dep_tree/` wire
 // format): name / exact version / depth. The completeness check below only reads
 // the name; the full shape is exported for callers that hold the resolved list.
@@ -131,6 +174,79 @@ export function assertDependenciesResolved(
     `Could not resolve ${missing.length === 1 ? 'package' : 'packages'} from the package CDN: ${list}. ` +
       `The requested version may not exist on the CDN's npm mirror yet — try a lower version range in package.json.`,
   );
+}
+
+/**
+ * Reduce a package.json dependency range to a concrete `x.y.z[-pre][+build]`
+ * version — the range's FLOOR (what a caret/hyphenless range guarantees): strip
+ * a leading range operator and take the first version token. Returns
+ * `undefined` for anything that is not a single pinned-ish version (a tag, a
+ * URL, `*`, a multi-range), in which case the caller cannot re-pin and fails
+ * loud. Absorbed from the sandbox's `registryResolvedModules.ts` so the
+ * prerelease guard below can pin to the floor in exactly one spelling
+ * (PRETRANSPILED_ARTIFACTS_SPEC §4.4: the shared package is the single home).
+ *
+ * `^0.2.7` → `0.2.7`.
+ */
+export function concreteVersion(range: string | undefined): string | undefined {
+  if (typeof range !== 'string') return undefined;
+  const trimmed = range
+    .trim()
+    .replace(/^[\^~]|^>=|^<=|^>|^<|^=|^v/g, '')
+    .trim();
+  const m = trimmed.match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/);
+  return m ? m[1] : undefined;
+}
+
+/** A version is a prerelease when its `x.y.z` core is followed by `-`; build
+ *  metadata (`+…`) is ignored, matching the sandbox's `compareSemver`. No
+ *  semver library — this is the whole rule. */
+export function isPrereleaseVersion(version: string): boolean {
+  return /^\d+\.\d+\.\d+-/.test(version.split('+')[0]);
+}
+
+/** Does this RANGE itself ask for a prerelease (e.g. `^19.3.0-rc.1`)? The one
+ *  range question the guard needs — deliberately not a range evaluator. */
+const carriesPrerelease = (range: string): boolean => /\d+\.\d+\.\d+-[0-9A-Za-z]/.test(range);
+
+/** One resolved entry nobody asked for as a prerelease. */
+export interface UnrequestedPrerelease {
+  /** package name */
+  n: string;
+  /** the prerelease version the CDN resolved to */
+  v: string;
+  /** depth in the resolved tree (0 = top-level) */
+  d: number;
+  /** the range that was requested, when the entry's package was requested
+   *  (re-pin fuel — top-level entries carry it) */
+  range?: string;
+}
+
+/**
+ * The unrequested-prerelease guard (R3-600): the primary CDN's `/dep_tree/` has
+ * answered a caret range with a canary (`react ^19.2.5` →
+ * `19.3.0-canary-ff7445e6-20260831` while stable 19.3.0 was on npm) — under
+ * npm's semver a caret NEVER matches a prerelease, so every app declaring the
+ * range ran a canary in production. Returns the resolved entries that are
+ * prereleases although NO requested range asked for one; each caller decides
+ * what to do (the sandbox re-resolves top-level offenders pinned to their
+ * range's floor and fails the boot if one survives; the CLI never embeds one).
+ *
+ * If ANY requested range carries a prerelease tag, nothing is refused — a range
+ * like `^19.3.0-rc.1` legitimately resolves to (and pulls dependencies on)
+ * prereleases.
+ */
+export function findUnrequestedPrereleases(
+  requested: DepMap,
+  resolved: readonly ResolvedDependency[],
+): UnrequestedPrerelease[] {
+  if (Object.values(requested).some(carriesPrerelease)) return [];
+  const out: UnrequestedPrerelease[] = [];
+  for (const dep of resolved) {
+    if (!isPrereleaseVersion(dep.v)) continue;
+    out.push({ n: dep.n, v: dep.v, d: dep.d, ...(requested[dep.n] !== undefined ? { range: requested[dep.n] } : {}) });
+  }
+  return out;
 }
 
 // Modules the runtime ALWAYS resolves from a self-hosted versioned origin, not

@@ -80,6 +80,41 @@ test('frontmatter is stripped before MDX compile (no YAML leaks into output)', a
   assert.ok(!result.code.includes('secretKey'), 'frontmatter must not appear in compiled output');
 });
 
+test('GHSA-48c2-rrv3-qjmp regression: deeply nested YAML frontmatter fails BOUNDED, not with a raw RangeError', async () => {
+  // yaml <2.8.3 recursed without a depth bound on nested collections and died
+  // with a raw RangeError; ≥2.8.3 answers with a positioned YAMLParseError. The
+  // frontmatter of an MDX file is attacker-controlled content, so the parse
+  // itself is the attack surface (R3-258). Assert at the parse boundary —
+  // transformFile's own try/catch launders both outcomes into the same
+  // `{ error }` shape, which is why a transformFile-level test cannot tell the
+  // fixed and vulnerable versions apart (review round 1).
+  const { parseFrontmatter } = await import('../dist/index.js');
+  const depth = 10_000;
+  const evil = `---\na: ${'['.repeat(depth)}${']'.repeat(depth)}\n---\n\n# Title\n`;
+  let thrown = null;
+  try {
+    parseFrontmatter(evil);
+  } catch (err) {
+    thrown = err;
+  }
+  assert.ok(thrown, 'the pathological document must not parse successfully');
+  assert.equal(thrown.name, 'YAMLParseError', `expected the bounded yaml error, got ${thrown?.name}: ${thrown?.message?.slice(0, 80)}`);
+});
+
+test('the installed yaml satisfies the GHSA-48c2-rrv3-qjmp floor (>= 2.8.3)', async () => {
+  // The version pin IS the fix; assert it so a future re-pin cannot silently
+  // reopen the hole (the behavioral test above proves the floor means what we
+  // think it means).
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  const { version } = req('yaml/package.json');
+  const [major, minor, patch] = version.split('.').map(Number);
+  assert.ok(
+    major > 2 || (major === 2 && (minor > 8 || (minor === 8 && patch >= 3))),
+    `yaml ${version} is below the 2.8.3 floor`,
+  );
+});
+
 test('error-omission: malformed MDX returns { error }, never throws', async () => {
   // An unterminated JSX expression is an MDX compile error.
   const result = await transformFile({ path: '/app/content/bad.mdx', code: '# Hi\n\n<Unclosed\n' });

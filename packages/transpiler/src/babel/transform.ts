@@ -3,6 +3,7 @@ import * as babel from '@babel/standalone';
 
 import { loadPlugin, loadPreset } from './babel-plugin-registry';
 import { collectDependencies } from './dep-collector';
+import { importMetaShim } from './import-meta-shim';
 
 export interface ITransformData {
   code: string;
@@ -99,6 +100,11 @@ export async function transformBabel({
   const requires: Set<string> = new Set();
   const presets = await getPresets(config?.presets ?? []);
   const plugins = await getPlugins(config?.plugins ?? []);
+  // R3-328: rewrite `import.meta` syntax before anything evaluates it — the emitted
+  // `$ir_import_meta` identifier is provided per-module by the runtime (frozen
+  // `{ url }`). Always-on (like the dep collector), NOT config-driven: the configs are
+  // the byte-identity contract and this applies to every chain variant equally.
+  plugins.push(importMetaShim());
   plugins.push(collectDependencies(requires));
   const transformed = babel.transform(code, {
     filename: filepath,

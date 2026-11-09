@@ -2,6 +2,7 @@
 // of Babel/MDX: normal transforms run in the parent-owned worker, and importing
 // the full compiler here duplicates its download and initialization at boot.
 export { TRANSPILER_VERSION, PRESET_NAME } from './version';
+export { IMPORT_META_GLOBAL } from './babel/import-meta-shim';
 export {
   selectReactChain,
   isTransformable,
@@ -22,6 +23,11 @@ export {
   packageEntry,
   importedPackages,
   assertDependenciesResolved,
+  rootRuntimeDependencies,
+  concreteVersion,
+  isPrereleaseVersion,
+  findUnrequestedPrereleases,
 } from './depmap';
+export type { RootPackageShape, UnrequestedPrerelease } from './depmap';
 export type { DepMap, ResolvedDependency } from './depmap';
 export type { ReactChain } from './presets/react';

@@ -50,6 +50,12 @@ describe('newly installed packages link against the current filesystem', () => {
     expect(evaluate).not.toBeNull();
     evaluate!();
     expect((globalThis as Record<string, unknown>).__linkedResult).toBe(83);
+    const updates = h.sentMessages.filter(m => m.type === 'build-progress').map(m => m.data as any);
+    expect(updates).toContainEqual(expect.objectContaining({ phase: 'scanning', item: '/src/main.ts', done: true }));
+    expect(updates).toContainEqual(expect.objectContaining({ phase: 'dependencies', completed: 0, total: 2 }));
+    expect(updates.filter(p => p.phase === 'dependencies' && p.done).map(p => p.item).sort()).toEqual(['renderer@1.0.0', 'state@1.0.0']);
+    expect(updates).toContainEqual(expect.objectContaining({ phase: 'dependencies', completed: 2, total: 2, done: true }));
+    expect(updates).toContainEqual(expect.objectContaining({ phase: 'compiling', item: '/src/main.ts', done: true }));
   });
 
   it('links an on-demand install after an earlier filesystem lookup missed its peer', async () => {
@@ -60,4 +66,5 @@ describe('newly installed packages link against the current filesystem', () => {
     expect(renderer).toBeDefined();
     expect(renderer!.evaluate().context.exports()).toBe(42);
   });
+
 });

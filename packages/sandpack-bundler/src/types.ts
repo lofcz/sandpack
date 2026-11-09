@@ -10,6 +10,8 @@ export interface IPackageJSON {
   module?: string;
   source?: string;
   dependencies?: DepMap;
+  peerDependencies?: DepMap;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   /**
    * The per-repo `immediately.run` config object (same key the host reads for
    * `requireLatest`/`provides`, see immediatelyRunConfig.ts). The bundler only

@@ -2,6 +2,7 @@ import * as logger from '../../utils/logger';
 import evaluate, { getExtendedSwcHelpers } from './eval';
 import { HotContext } from './hot';
 import { Module } from './Module';
+import { IMPORT_META_GLOBAL } from '@lofcz/transpiler/runtime';
 
 class EvaluationContext {
 
@@ -66,7 +67,9 @@ export class Evaluation {
     const code = module.compiled + `\n//# sourceURL=${location.origin}${this.module.filepath}`;
 
     this.context = new EvaluationContext(this);
-    this.context.exports = evaluate(code, this.require.bind(this), this.context, {}, {});
+    this.context.exports = evaluate(code, this.require.bind(this), this.context, {}, {
+      [IMPORT_META_GLOBAL]: Object.freeze({ url: new URL(module.filepath, location.href).href }),
+    });
   }
 
   require(specifier: string): any {

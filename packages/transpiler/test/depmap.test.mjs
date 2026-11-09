@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 
 import {
   assertDependenciesResolved,
-  computeDeclaredDepMap,
-  computeRequestDepMap,
-  importedPackages,
-  packageEntry,
-  packageName,
-  transformFile,
+  computeInputDepMap,
+  concreteVersion,
+  filterBuildDeps,
+  findUnrequestedPrereleases,
+  isBuildDep,
+  isPrereleaseVersion,
+  rootRuntimeDependencies,
 } from '../dist/index.js';
 
 test('assertDependenciesResolved: passes when every requested dep is in the resolved set', () => {
@@ -43,127 +44,171 @@ test('assertDependenciesResolved: presence anywhere (no depth assumption), empty
   assert.doesNotThrow(() => assertDependenciesResolved({}, []));
 });
 
-test('computeDeclaredDepMap: augments, strips self-hosted, keeps tooling, sorts', () => {
-  const out = computeDeclaredDepMap({
+test('computeInputDepMap: augments, filters build deps, strips self-hosted, sorts', () => {
+  const out = computeInputDepMap({
     react: '^19.0.0',
     vite: '^5.0.0',
+    'babel-plugin-macros': '^3.0.0',
     '@immediately-run/sdk': '^0.4.0',
   });
-  // self-hosted removed; preset augments added; tooling stays declared (it is
-  // only excluded from the request when nothing imports it); keys sorted.
+  // self-hosted + build deps removed; preset augments added; keys sorted.
   assert.deepEqual(out, {
     'core-js': '3.22.7',
     react: '^19.0.0',
     'react-error-boundary': '^6.1.0',
     'react-refresh': '^0.11.0',
-    vite: '^5.0.0',
   });
+  // key order is sorted
   assert.deepEqual(Object.keys(out), Object.keys(out).slice().sort());
 });
 
-test('computeDeclaredDepMap: keeps an app-declared react-refresh range', () => {
-  const out = computeDeclaredDepMap({ 'react-refresh': '^0.14.0' });
+test('computeInputDepMap: keeps an app-declared react-refresh range', () => {
+  const out = computeInputDepMap({ 'react-refresh': '^0.14.0' });
   assert.equal(out['react-refresh'], '^0.14.0');
 });
 
-test('computeDeclaredDepMap: does not mutate the caller input', () => {
+test('computeInputDepMap: does not mutate the caller input', () => {
   const input = { react: '^19.0.0' };
-  computeDeclaredDepMap(input);
+  computeInputDepMap(input);
   assert.deepEqual(input, { react: '^19.0.0' });
 });
 
-test('computeDeclaredDepMap: extra registryResolved names are stripped', () => {
-  const out = computeDeclaredDepMap({ left: '1.0.0', right: '2.0.0' }, ['left']);
+test('computeInputDepMap: extra registryResolved names are stripped', () => {
+  const out = computeInputDepMap({ left: '1.0.0', right: '2.0.0' }, ['left']);
   assert.ok(!('left' in out));
   assert.equal(out.right, '2.0.0');
 });
 
-test('packageName: maps specifiers to the package they load from node_modules', () => {
-  const cases = {
-    react: 'react',
-    'react-dom/client': 'react-dom',
-    'lodash/fp/map.js': 'lodash',
-    '@scope/pkg': '@scope/pkg',
-    '@scope/pkg/sub/path': '@scope/pkg',
-    JSONStream: 'JSONStream',
-    './local': null,
-    '../up': null,
-    '/abs/path': null,
-    '#internal': null,
-    'node:fs': null,
-    'https://esm.sh/react': null,
-    'data:text/css,x': null,
-    '@/components/Button': null,
-    '@scope': null,
-    '': null,
-  };
-  for (const [specifier, expected] of Object.entries(cases)) {
-    assert.equal(packageName(specifier), expected, specifier);
-  }
-  assert.equal(packageName(undefined), null);
+test('isBuildDep / filterBuildDeps', () => {
+  assert.equal(isBuildDep('vite'), true);
+  assert.equal(isBuildDep('@babel/plugin-transform-runtime'), true);
+  assert.equal(isBuildDep('babel-preset-react-app'), true);
+  assert.equal(isBuildDep('react'), false);
+  assert.deepEqual(filterBuildDeps({ react: '^19', vite: '^5' }), { react: '^19' });
 });
 
-test('packageEntry: the entry a specifier imports, in the CDN\'s form', () => {
-  assert.equal(packageEntry('react'), '.');
-  assert.equal(packageEntry('react-dom/client'), './client');
-  assert.equal(packageEntry('@scope/pkg/a/b.js'), './a/b.js');
-  assert.equal(packageEntry('lodash/'), '.');
-  assert.equal(packageEntry('./local'), null);
+// --- rootRuntimeDependencies (R3-289) ---------------------------------------
+
+test('rootRuntimeDependencies: a peer-only declaration is fetched (the root has no consumer)', () => {
+  const out = rootRuntimeDependencies({ peerDependencies: { react: '^19.0.0' } });
+  assert.deepEqual(out, { react: '^19.0.0' });
 });
 
-test('importedPackages: dedupes package roots and drops local specifiers', () => {
+test('rootRuntimeDependencies: dependencies win when both declare the same name', () => {
+  const out = rootRuntimeDependencies({
+    dependencies: { react: '^18.2.0' },
+    peerDependencies: { react: '^19.0.0' },
+  });
+  assert.equal(out.react, '^18.2.0');
+});
+
+test('rootRuntimeDependencies: peerDependenciesMeta optional entries are skipped', () => {
+  const out = rootRuntimeDependencies({
+    peerDependencies: { react: '^19.0.0', '@types/react': '^19.0.0' },
+    peerDependenciesMeta: { '@types/react': { optional: true } },
+  });
+  assert.deepEqual(out, { react: '^19.0.0' });
+});
+
+test('rootRuntimeDependencies: empty/absent everything yields {}', () => {
+  assert.deepEqual(rootRuntimeDependencies({}), {});
+  assert.deepEqual(rootRuntimeDependencies(undefined), {});
+});
+
+// --- concreteVersion (moved from the sandbox; the re-pin floor) ---------------
+
+test('concreteVersion: a caret range reduces to its floor', () => {
+  assert.equal(concreteVersion('^0.2.7'), '0.2.7');
+  assert.equal(concreteVersion('~1.2.3'), '1.2.3');
+  assert.equal(concreteVersion('>=2.0.0'), '2.0.0');
+  assert.equal(concreteVersion('v1.2.3'), '1.2.3');
+});
+
+test('concreteVersion: keeps prerelease and build suffixes of the first token', () => {
+  assert.equal(concreteVersion('^1.0.0-beta.1'), '1.0.0-beta.1');
+  assert.equal(concreteVersion('^1.0.0+build.7'), '1.0.0+build.7');
+});
+
+test('concreteVersion: a bare exact version is concrete (no operator needed)', () => {
+  assert.equal(concreteVersion('0.2.8'), '0.2.8');
+  assert.equal(concreteVersion('0.3.0-rc.1'), '0.3.0-rc.1');
+});
+
+test('concreteVersion: a two-component version is NOT concrete (three-component core required)', () => {
+  assert.equal(concreteVersion('1.2'), undefined);
+});
+
+test('concreteVersion: a tag, URL, star or multi-range is not concrete (the caller fails loud)', () => {
+  assert.equal(concreteVersion('latest'), undefined);
+  assert.equal(concreteVersion('*'), undefined);
+  assert.equal(concreteVersion('github:a/b'), undefined);
+  assert.equal(concreteVersion('1.x || 2.x'), undefined);
+  assert.equal(concreteVersion(undefined), undefined);
+});
+
+// --- findUnrequestedPrereleases (R3-600) — the recorded 2026-09-11 CDN answers,
+// verbatim: the primary /dep_tree/ resolved caret ranges to a canary while
+// stable 19.3.0 was on npm. ------------------------------------------------------
+
+const CANARY = '19.3.0-canary-ff7445e6-20260831';
+
+test('the recorded canary answer names react', () => {
+  const out = findUnrequestedPrereleases(
+    { react: '^19.2.5' },
+    [{ n: 'react', v: CANARY, d: 0 }],
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].n, 'react');
+  assert.equal(out[0].v, CANARY);
+  assert.equal(out[0].range, '^19.2.5');
+});
+
+test('the recorded two-dep answer names react, react-dom and the scheduler', () => {
+  const out = findUnrequestedPrereleases(
+    { react: '^19.2.5', 'react-dom': '^19.2.5' },
+    [
+      { n: 'react', v: CANARY, d: 0 },
+      { n: 'react-dom', v: CANARY, d: 0 },
+      { n: 'scheduler', v: '0.28.0-canary-ff7445e6-20260831', d: 1 },
+    ],
+  );
   assert.deepEqual(
-    [...importedPackages(['react', 'react/jsx-runtime', './App', '@mui/material/Button', undefined])],
-    ['react', '@mui/material'],
+    out.map((e) => e.n).sort(),
+    ['react', 'react-dom', 'scheduler'],
+  );
+  // The scheduler was not REQUESTED, so it carries no re-pin range; react and
+  // react-dom were, so they do.
+  assert.equal(out.find((e) => e.n === 'scheduler').range, undefined);
+});
+
+test('the recorded exact-pin and ^18 answers name nothing', () => {
+  assert.deepEqual(
+    findUnrequestedPrereleases({ react: '19.2.5' }, [{ n: 'react', v: '19.2.5', d: 0 }]),
+    [],
+  );
+  assert.deepEqual(
+    findUnrequestedPrereleases({ react: '^18.3.1' }, [{ n: 'react', v: '18.3.1', d: 0 }]),
+    [],
   );
 });
 
-test('computeRequestDepMap: requests only imported declared packages plus preset implicits', () => {
-  const declared = computeDeclaredDepMap({
-    react: '^19.0.0',
-    three: '0.160.0',
-    vite: '^5.0.0',
-    '@types/three': '0.160.0',
-    '@vitejs/plugin-react': '^4.0.0',
-    eslint: '^9.0.0',
-  });
-  const request = computeRequestDepMap(declared, importedPackages(['react', 'three/addons/controls', 'undeclared']));
-  assert.deepEqual(request, {
-    'core-js': '3.22.7',
-    react: '^19.0.0',
-    'react-error-boundary': '^6.1.0',
-    'react-refresh': '^0.11.0',
-    three: '0.160.0',
-  });
+test('a requested prerelease range allows prereleases anywhere in the answer', () => {
+  assert.deepEqual(
+    findUnrequestedPrereleases(
+      { react: '^19.3.0-rc.1' },
+      [
+        { n: 'react', v: '19.3.0-rc.2', d: 0 },
+        { n: 'scheduler', v: '0.28.0-rc.1', d: 1 },
+      ],
+    ),
+    [],
+  );
 });
 
-test('computeRequestDepMap: ignores inherited object keys', () => {
-  assert.deepEqual(computeRequestDepMap({}, ['constructor', 'toString']), {});
-});
-
-// Regression (sciobot-next session 2026-11-04): a generated three.js game
-// declared `three` + `@types/three`. The declared map went to /dep_tree whole;
-// the CDN skips `@types/*`, the registry read that as a dropped package and
-// executed `@types/three` from the esm.sh fallback as JavaScript. With
-// import-driven requests a declaration package is never requested: the app's
-// specifiers, after the real transform chain erases type-only imports, only
-// name `three`.
-test('a declared @types package behind a namespace import is never requested', async () => {
-  const declared = computeDeclaredDepMap({ react: '^19.0.0', three: '0.160.0', '@types/three': '0.160.0' });
-  const result = await transformFile({
-    path: '/app/src/Game.tsx',
-    code: [
-      "import * as THREE from 'three';",
-      "import type { Mesh } from 'three';",
-      'export function Game() {',
-      '  const mesh: Mesh = new THREE.Mesh();',
-      '  return <canvas data-id={mesh.id} />;',
-      '}',
-    ].join('\n'),
-  });
-  assert.ok(!('error' in result), JSON.stringify(result));
-  const request = computeRequestDepMap(declared, importedPackages(result.deps));
-  assert.equal(request.three, '0.160.0');
-  assert.ok(!('@types/three' in request));
-  assert.deepEqual(Object.keys(request).filter(name => name.startsWith('@types/')), []);
+test('build metadata alone is not a prerelease', () => {
+  assert.equal(isPrereleaseVersion('19.3.0+build.1'), false);
+  assert.deepEqual(
+    findUnrequestedPrereleases({ react: '^19.2.5' }, [{ n: 'react', v: '19.3.0+build.1', d: 0 }]),
+    [],
+  );
 });

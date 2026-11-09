@@ -76,6 +76,7 @@ export class ModuleRegistry {
   private cancelledDownloads: Set<Promise<NodeModule>> = new Set();
 
   manifest: IResolvedDependency[] = [];
+  private preloadCompleted: number | null = null;
 
   // The app's declared DepMap: the version source for every install and the
   // /dep_tree pins. Only declared packages are ever requested.
@@ -377,13 +378,18 @@ export class ModuleRegistry {
   }
 
   async preloadModules(): Promise<void> {
-    await Promise.all(this.manifest.map((dep) => this.installEntries(dep)));
-    // Close over CDN-reported used modules (`ICDNModule.m`) that `/dep_tree`
-    // omitted. Flat Sandpack installs only what dep_tree returns; some CDNs
-    // (e.g. transforms that inject `@swc/helpers`) list those edges on the
-    // package but forget them in dep_tree — pull them in so `require()` works
-    // without host-side IMPLIED_PEERS hacks or agent `pkg add` hints.
-    await this.fetchUsedModuleClosure();
+    this.preloadCompleted = 0;
+    try {
+      await Promise.all(this.manifest.map((dep) => this.installEntries(dep)));
+      // Close over CDN-reported used modules (`ICDNModule.m`) that `/dep_tree`
+      // omitted. Flat Sandpack installs only what dep_tree returns; some CDNs
+      // (e.g. transforms that inject `@swc/helpers`) list those edges on the
+      // package but forget them in dep_tree — pull them in so `require()` works
+      // without host-side IMPLIED_PEERS hacks or agent `pkg add` hints.
+      await this.fetchUsedModuleClosure();
+    } finally {
+      this.preloadCompleted = null;
+    }
   }
 
   /**
@@ -439,9 +445,17 @@ export class ModuleRegistry {
 
   /** Install a tree entry with its entries, or add them to an installed package. */
   private async installEntries(dep: IResolvedDependency): Promise<void> {
+    const item = `${dep.n}@${dep.v}`;
+    this.bundler.reportProgress?.({ phase: 'dependencies', item,
+      completed: this.preloadCompleted ?? undefined,
+      total: this.preloadCompleted === null ? undefined : this.manifest.length });
     const entries = dep.e?.length ? dep.e : [ROOT_ENTRY];
     const nodeModule = await this.fetchNodeModule(dep.n, dep.v, dep.s, entries);
     await this.expandModule(nodeModule, entries);
+    if (this.preloadCompleted !== null) this.preloadCompleted++;
+    this.bundler.reportProgress?.({ phase: 'dependencies', item, done: true,
+      completed: this.preloadCompleted ?? undefined,
+      total: this.preloadCompleted === null ? undefined : this.manifest.length });
   }
 
   /**

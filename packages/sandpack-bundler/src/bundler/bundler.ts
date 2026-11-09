@@ -9,12 +9,12 @@ import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
-import { computeRequestDepMap, importedPackages, isTransformable, packageEntry, packageName } from '@lofcz/transpiler/runtime';
+import { computeRequestDepMap, importedPackages, isTransformable, packageEntry, packageName, rootRuntimeDependencies } from '@lofcz/transpiler/runtime';
 import { cssModuleSpecifiers } from '@lofcz/transpiler/css';
 import { ModuleNotFoundError } from '../errors/ModuleNotFound';
 import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
-import { BundlerStatus } from '../protocol/message-types';
+import { BundlerStatus, BuildProgressUpdate } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError } from './registryResolvedModules';
 import { verifyVendoredFiles, decideIntegrity, type SdkIntegrity, type FileHashes } from './sdkIntegrity';
@@ -225,6 +225,13 @@ export class Bundler {
 
   private onStatusChangeEmitter = new Emitter<BundlerStatus>();
   onStatusChange = this.onStatusChangeEmitter.event;
+
+  private scannedFiles = 0;
+  private compiledFiles = 0;
+
+  reportProgress(update: BuildProgressUpdate): void {
+    this.messageBus.sendMessage('build-progress', update);
+  }
 
   // Injectable RegistryFS lazy-fetch function (the G0-0 harness injects a network
   // spy so a test can observe lazy unpkg fetches). Undefined → RegistryFS uses its
@@ -489,7 +496,7 @@ export class Bundler {
     // are added by the preset augmentation below regardless.
     const registryResolved = this.registryResolvedNames();
     const dependencies = Object.fromEntries(
-      Object.entries(this.parsedPackageJSON.dependencies ?? {}).filter(([name]) => !registryResolved.has(name))
+      Object.entries(rootRuntimeDependencies(this.parsedPackageJSON)).filter(([name]) => !registryResolved.has(name))
     );
     return this.requirePreset().augmentDependencies(dependencies);
   }
@@ -506,9 +513,9 @@ export class Bundler {
    * compiling install on demand (`resolveAsync`).
    */
   async loadNodeModules() {
-    // Without a dependencies field there is nothing to version an install.
-    if (!this.parsedPackageJSON?.dependencies) return;
+    if (!this.parsedPackageJSON?.dependencies && !this.parsedPackageJSON?.peerDependencies) return;
     const declared = this.declaredDependencies();
+    this.reportProgress({ phase: 'scanning', completed: 0 });
     const specifiers = [...this.artifactStore.recordedSpecifiers(), ...(await this.scanEntryImports())];
     // The preset's implicit deps are declarations only: the scan covers the
     // runtime code that imports them, with the entries it imports.
@@ -521,10 +528,12 @@ export class Bundler {
       (entries[name] ??= []).includes(entry) || entries[name].push(entry);
     }
 
+    this.reportProgress({ phase: 'resolving', item: Object.keys(request).slice(0, 8).join(', ') });
     await this.moduleRegistry.fetchManifest(declared, request, await this.readSidecarLockset(), entries);
 
     // Load all modules
     await this.moduleRegistry.preloadModules();
+    this.reportProgress({ phase: 'linking' });
     await this.moduleRegistry.loadModuleDependencies();
   }
 
@@ -568,10 +577,17 @@ export class Bundler {
    * `@import`s inline, so it can only run once packages are installed).
    */
   private async scanModuleSpecifiers(path: string): Promise<string[]> {
+    const item = path.startsWith(APP_ROOT + '/') ? stripAppRoot(path) : undefined;
+    if (item) this.reportProgress({ phase: 'scanning', item, completed: this.scannedFiles });
     const source = await this.fs.readFileAsync(path);
-    if (path.endsWith('.css')) return cssModuleSpecifiers(source);
+    if (path.endsWith('.css')) {
+      const specifiers = cssModuleSpecifiers(source);
+      if (item) this.reportProgress({ phase: 'scanning', item, completed: ++this.scannedFiles, done: true });
+      return specifiers;
+    }
     if (!isTransformable(path) && !(this.isBundlerOwned(path) && SCRIPT_RE.test(path))) return [];
     const result = await new Module(path, source, false, this).transpile();
+    if (item && !result.error) this.reportProgress({ phase: 'scanning', item, completed: ++this.scannedFiles, done: true });
     this.bootTranspiles.set(path, { source, result });
     return result.dependencies;
   }
@@ -798,12 +814,17 @@ export class Bundler {
       this.modules.set(path, module);
     }
     this.refreshMetadata(path, module.source);
+    const progressItem = path.startsWith(APP_ROOT + '/') ? stripAppRoot(path) : undefined;
+    if (progressItem) this.reportProgress({ phase: 'compiling', item: progressItem, completed: this.compiledFiles });
     const scanned = this.bootTranspiles.get(path);
     this.bootTranspiles.delete(path);
     if (scanned && scanned.source === module.source && module.compiled == null && module.compilationError == null) {
       await module.adopt(scanned.result);
     } else {
       await module.compile();
+    }
+    if (progressItem && !module.compilationError) {
+      this.reportProgress({ phase: 'compiling', item: progressItem, completed: ++this.compiledFiles, done: true });
     }
     // §5.3 write-through: cache a live-transpiled covered source so an in-session
     // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
@@ -1188,6 +1209,9 @@ export class Bundler {
     // Ensure the bundler-owned mounts (`/node_modules`, `/transpiled`) exist before
     // the first read/write. Idempotent — `index.ts` already calls this after
     // construction; this guard covers the harness path (and any direct `compile()`).
+    this.scannedFiles = 0;
+    this.compiledFiles = 0;
+    this.reportProgress({ phase: 'preparing' });
     await this.setupModuleMounts();
     bootLap('setupModuleMounts');
 

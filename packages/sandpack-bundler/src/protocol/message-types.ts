@@ -1,5 +1,14 @@
 import { SandpackLogLevel } from '../utils/logger';
 
+/** Mirrors sandpack-client's additive build-progress message. */
+export interface BuildProgressUpdate {
+  phase: 'preparing' | 'scanning' | 'resolving' | 'dependencies' | 'linking' | 'compiling' | 'rendering';
+  item?: string;
+  completed?: number;
+  total?: number;
+  done?: boolean;
+}
+
 /**
  * Bootstrap configuration delivered once via the `register-frame` handshake
  * (alongside the transferred fs `MessagePort`). The bundler self-triggers its
