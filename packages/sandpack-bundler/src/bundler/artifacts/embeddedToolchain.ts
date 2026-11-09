@@ -1,4 +1,4 @@
-import { TRANSPILER_VERSION } from '@lofcz/transpiler';
+import { TRANSPILER_VERSION } from '@lofcz/transpiler/runtime';
 
 import type { EmbeddedToolchainIdentity } from './artifactIndex';
 import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';

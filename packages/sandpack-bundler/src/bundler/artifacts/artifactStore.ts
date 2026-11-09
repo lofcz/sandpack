@@ -1,5 +1,4 @@
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, stripAppRoot, underAppRoot } from '../../fsLayout';
-import { transformFile } from '@lofcz/transpiler';
 import {
   ARTIFACTS_DIR,
   type ArtifactIndex,
@@ -256,6 +255,7 @@ export class ArtifactStore {
         // artifact-served; nothing to verify.
         continue;
       }
+      const { transformFile } = await import('@lofcz/transpiler');
       const result = await transformFile({ path: appModulePath, code: source });
       if ('error' in result || result.code !== consumedArtifact) {
         this.discardAll();

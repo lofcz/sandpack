@@ -9,7 +9,7 @@ import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
-import { computeRequestDepMap, importedPackages, isTransformable, packageEntry, packageName } from '@lofcz/transpiler';
+import { computeRequestDepMap, importedPackages, isTransformable, packageEntry, packageName } from '@lofcz/transpiler/runtime';
 import { cssModuleSpecifiers } from '@lofcz/transpiler/css';
 import { ModuleNotFoundError } from '../errors/ModuleNotFound';
 import { ArtifactStore } from './artifacts/artifactStore';

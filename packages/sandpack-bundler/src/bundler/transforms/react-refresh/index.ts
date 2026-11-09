@@ -4,7 +4,7 @@ import {
   HELPER_CODE,
   HELPER_PATH,
   REACT_REFRESH_RUNTIME,
-} from '@lofcz/transpiler';
+} from '@lofcz/transpiler/runtime';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
 
 // The HMR wrapper bytes (HELPER_CODE, the prelude/postlude, REACT_REFRESH_RUNTIME)

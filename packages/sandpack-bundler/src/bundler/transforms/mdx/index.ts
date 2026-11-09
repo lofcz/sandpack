@@ -1,21 +1,15 @@
 import { Bundler } from '../../bundler';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
-import { compile } from '@mdx-js/mdx'
-import { VFile } from 'vfile'
 
 import { BundlerError } from '../../../errors/BundlerError';
 import {VFileMessage} from 'vfile-message'
-import remarkGfm from 'remark-gfm'
-import { PluggableList } from 'unified';
+import type { PluggableList } from 'unified';
 import { parseFrontmatter } from '../../frontmatter';
 
 export class MDXTransformer extends Transformer {
 
   private recmaPlugins:PluggableList = [];
   private rehypePlugins:PluggableList = [];
-  private remarkPlugins:PluggableList = [
-    [remarkGfm]
-  ];
 
   constructor() {
     super('mdx-transformer');
@@ -27,11 +21,14 @@ export class MDXTransformer extends Transformer {
 
   async transform(ctx: ITranspilationContext, config: any): Promise<ITranspilationResult> {
     const {content} = parseFrontmatter(ctx.code);
-    const file = new VFile({
+    const file = {
       path: ctx.module.filepath,
       value: content
-    })
+    };
     try {
+      const [{ compile }, { default: remarkGfm }] = await Promise.all([
+        import('@mdx-js/mdx'), import('remark-gfm'),
+      ]);
       const compilerOutput = await compile(file, {
         development: true,
         jsx: true,
@@ -39,7 +36,7 @@ export class MDXTransformer extends Transformer {
         outputFormat: 'program',
         recmaPlugins: this.recmaPlugins,
         rehypePlugins: this.rehypePlugins,
-        remarkPlugins: this.remarkPlugins
+        remarkPlugins: [[remarkGfm]]
       })
 
       return {

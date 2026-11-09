@@ -11,7 +11,7 @@ export default defineConfig({
   // second entry leaves `dist/index.js` AND `dist/index.cjs` byte-identical (the
   // PRETRANSPILED §4.4 contract, verified) instead of hoisting shared code into a chunk.
   // The CSS entry is shared with authoring without loading Babel or MDX.
-  entry: ['src/index.ts', 'src/babel/worker-api.ts', 'src/css.ts'],
+  entry: ['src/index.ts', 'src/babel/worker-api.ts', 'src/css.ts', 'src/runtime.ts'],
   format: ['esm', 'cjs'],
   splitting: false,
   dts: true,

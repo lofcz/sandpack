@@ -1,4 +1,4 @@
-import { assertDependenciesResolved, packageEntry, packageName, transformFile } from '@lofcz/transpiler';
+import { assertDependenciesResolved, packageEntry, packageName } from '@lofcz/transpiler/runtime';
 
 import * as logger from '../../utils/logger';
 import { sortObj } from '../../utils/object';
@@ -520,6 +520,7 @@ export class ModuleRegistry {
 
     // Transpile the esm.sh ES module through the SAME chain the bundler runs, so
     // its `require("react")` binds to the app's React, not a second instance.
+    const { transformFile } = await import('@lofcz/transpiler');
     const transformed = await transformFile({ path: esmFallbackModulePath(name), code: source });
     if ('error' in transformed) {
       throw new Error(
