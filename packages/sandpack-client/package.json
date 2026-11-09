@@ -19,6 +19,8 @@
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./package.json": "./package.json",
+    "./sandpack/*": "./sandpack/*",
     "./clients/runtime": {
       "types": "./dist/clients/runtime/index.d.ts",
       "import": "./dist/clients/runtime/index.mjs",
@@ -51,16 +53,18 @@
     "test": "jest",
     "lint": "eslint '**/*.ts?(x)' --fix",
     "build": "rollup -c --bundleConfigAsCjs",
-    "build:publish": "npm run build && gulp",
+    "build:publish": "npm run build && npm run build:runtime",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "build:bundler": "gulp",
     "format": "prettier --write '**/*.{ts,tsx,js,jsx}'",
     "format:check": "prettier --check '**/*.{ts,tsx}'",
     "dev": "npm run build -- --watch",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run build:publish",
     "typecheck": "tsc --noEmit"
   },
   "files": [
     "dist",
+    "sandpack",
     "package.json",
     "README.md"
   ],

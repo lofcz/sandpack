@@ -67,6 +67,15 @@ jobs:
       - name: Install root dependencies (workspace links)
         run: bun install
 
+      # Runtime artifact cache stamps must match the published transpiler bytes,
+      # not workspace sources. The bundler itself still builds from this checkout.
+      - name: Install published transpiler for the runtime stamp
+        if: github.event.inputs.package == 'sandpack-client'
+        run: |
+          version=$(node -p "require('./packages/transpiler/package.json').version")
+          npm install --prefix "$RUNNER_TEMP/sandpack-transpiler" --ignore-scripts --no-package-lock "@lofcz/transpiler@$version"
+          echo "TRANSPILER_PACKAGE_ROOT=$RUNNER_TEMP/sandpack-transpiler/node_modules/@lofcz/transpiler" >> "$GITHUB_ENV"
+
       - name: Typecheck
         working-directory: ${{ env.PKG_DIR }}
         run: npm run typecheck --if-present

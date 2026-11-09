@@ -5,6 +5,7 @@ node_modules
 dist
 dist-worker
 dist-authoring-worker
+packages/sandpack-client/sandpack
 *.tgz
 
 # Rust
