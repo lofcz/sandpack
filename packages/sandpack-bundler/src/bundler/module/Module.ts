@@ -1,6 +1,5 @@
 import { BundlerError } from '../../errors/BundlerError';
 import { Bundler } from '../bundler';
-import { CircularImportError, detectCycle } from './circularImport';
 import { Evaluation } from './Evaluation';
 import { HotContext } from './hot';
 
@@ -165,18 +164,6 @@ export class Module {
       return this.evaluation;
     }
 
-    // Detect an import cycle BEFORE re-entering evaluation. `new Evaluation`
-    // runs this module's code synchronously, which require()s its deps; if one
-    // of them require()s back into a module already mid-evaluation (this one),
-    // `evaluation` is not yet set and we would recurse forever. Throw a cycle
-    // error naming the exact loop instead of overflowing the stack.
-    const cycle = detectCycle(this.bundler.evaluationStack, this.filepath);
-    if (cycle) {
-      // `cycle` starts at this module (the re-entered one); the formatter adds
-      // the closing edge back to it.
-      throw new CircularImportError(cycle);
-    }
-
     if (this.hot.hmrConfig) {
       // this.bundler.setHmrStatus('dispose');
       // Call module.hot.dispose handler
@@ -189,7 +176,12 @@ export class Module {
     this.hot = this.hot.clone();
     this.bundler.evaluationStack.push(this.filepath);
     try {
+      // Cyclic requires observe current module.exports during execution.
       this.evaluation = new Evaluation(this);
+      this.evaluation.run();
+    } catch (error) {
+      this.evaluation = null;
+      throw error;
     } finally {
       this.bundler.evaluationStack.pop();
     }

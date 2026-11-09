@@ -2,6 +2,7 @@ import { Bundler } from '../bundler';
 import { DepMap } from '../module-registry';
 import { Module } from '../module/Module';
 import { Transformer } from '../transforms/Transformer';
+import { JsonTransformer } from '../transforms/json';
 
 export class Preset {
   private transformers = new Map<string, Transformer>();
@@ -27,6 +28,7 @@ export class Preset {
 
   async init(bundler: Bundler): Promise<void> {
     this.bundler = bundler;
+    await this.registerTransformer(new JsonTransformer());
   }
 
   mapTransformers(module: Module): Array<[string, any]> {
@@ -34,7 +36,8 @@ export class Preset {
   }
 
   getTransformers(module: Module): Array<[Transformer, any]> {
-    const transformersMap = this.mapTransformers(module);
+    const transformersMap: Array<[string, any]> = /\.json$/i.test(module.filepath)
+      ? [['json-transformer', {}]] : this.mapTransformers(module);
     return transformersMap.map((val) => {
       const transformer = this.getTransformer(val[0]);
       if (!transformer) {

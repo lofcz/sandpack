@@ -69,6 +69,24 @@ describe('RegistryFS (direct backend)', () => {
   });
 
   describe('read', () => {
+    it('preserves non-UTF8 package assets through stat, partial reads and cached reads', async () => {
+      const { registry } = fixture();
+      const bytes = Uint8Array.from([0, 255, 128, 195, 40, 254, 73, 68]);
+      registry.modules.get('react')!.files['font.woff2'] = bytes.length;
+      const fetcher = jest.fn(async () => bytes);
+      const regfs = new RegistryFS(registry, fetcher);
+      const path = '/react/font.woff2';
+      expect((await regfs.stat(path)).size).toBe(bytes.length);
+      const full = new Uint8Array(bytes.length);
+      await regfs.read(path, full);
+      expect(full).toEqual(bytes);
+      const partial = new Uint8Array(3);
+      regfs.readSync(path, partial, 1, 4);
+      expect(partial).toEqual(bytes.slice(1, 4));
+      expect(regfs.statSync(path).size).toBe(bytes.length);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
     it('returns inlined content without fetching', async () => {
       const { registry, fetcher } = fixture();
       const regfs = new RegistryFS(registry, fetcher as unknown as RegistryFileFetcher);

@@ -19,12 +19,13 @@ const READ_ONLY_DIR = S_IFDIR | 0o555;
 registerImmutableUrlPrefix(NPM_FILE_ORIGIN);
 
 /** Default lazy fetch for a file the CDN bundle lists but does not inline. */
-const defaultFetchFile = async (moduleName: string, moduleVersion: string, relPath: string): Promise<string> => {
+const defaultFetchFile = async (moduleName: string, moduleVersion: string, relPath: string): Promise<Uint8Array> => {
   const response = await retryFetch(npmFileUrl(moduleName, moduleVersion, relPath), { maxRetries: 5 });
-  return response.text();
+  return new Uint8Array(await response.arrayBuffer());
 };
 
-export type RegistryFileFetcher = (moduleName: string, moduleVersion: string, relPath: string) => Promise<string>;
+type FileContent = string | Uint8Array;
+export type RegistryFileFetcher = (moduleName: string, moduleVersion: string, relPath: string) => Promise<FileContent>;
 
 interface ParsedPath {
   /** Bare module name (`react`, `@babel/runtime`), or null for the FS root. */
@@ -50,8 +51,8 @@ interface ParsedPath {
  * Paths arrive **mount-relative** (leading slash, e.g. `/react/index.js`).
  */
 export class RegistryFS extends FileSystem {
-  private contentCache: Map<string, string> = new Map();
-  private inflight: Map<string, Promise<string>> = new Map();
+  private contentCache: Map<string, FileContent> = new Map();
+  private inflight: Map<string, Promise<FileContent>> = new Map();
   private inoByPath: Map<string, number> = new Map();
   private nextIno = 1;
 
@@ -151,7 +152,7 @@ export class RegistryFS extends FileSystem {
 
   // --- content (lazy fetch + cache) ---------------------------------------
 
-  private async getContent(path: string): Promise<string> {
+  private async getContent(path: string): Promise<FileContent> {
     const cached = this.contentCache.get(path);
     if (cached !== undefined) return cached;
 
@@ -350,13 +351,13 @@ export class RegistryFS extends FileSystem {
 const encoder = new TextEncoder();
 
 /** UTF-8 byte length of a string. */
-function byteLength(content: string): number {
-  return encoder.encode(content).length;
+function byteLength(content: FileContent): number {
+  return typeof content === 'string' ? encoder.encode(content).length : content.byteLength;
 }
 
 /** Encode `content` and copy the `[offset, end)` byte slice into `buffer`. */
-function copyInto(buffer: Uint8Array, content: string, offset: number, end?: number): void {
-  const bytes = encoder.encode(content);
+function copyInto(buffer: Uint8Array, content: FileContent, offset: number, end?: number): void {
+  const bytes = typeof content === 'string' ? encoder.encode(content) : content;
   const stop = end === undefined ? bytes.length : Math.min(end, bytes.length);
   if (stop <= offset) return;
   buffer.set(bytes.subarray(offset, stop));

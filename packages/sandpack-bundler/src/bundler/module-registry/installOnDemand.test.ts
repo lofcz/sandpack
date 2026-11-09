@@ -42,6 +42,7 @@ describe('ModuleRegistry.ensurePackages', () => {
   beforeEach(async () => {
     mockedFetchManifest.mockReset();
     mockedFetchModule.mockReset();
+    mockedFetchModuleEntries.mockReset();
     mockedFetchManifest.mockImplementation(async (deps) =>
       Object.keys(deps).map((n) => ({ n, v: `${n === 'three' ? '0.160.1' : '1.0.0'}`, d: 0 })),
     );
@@ -76,21 +77,54 @@ describe('ModuleRegistry.ensurePackages', () => {
     expect(mockedFetchManifest.mock.calls[1][1]).toMatchObject({ react: '1.0.0', three: '0.160.1' });
   });
 
-  it('reports a failed install to every importer and retries after a package.json edit', async () => {
+  it('reports a failed install to every importer and retries without a package.json edit', async () => {
     mockedFetchManifest.mockResolvedValueOnce([]); // the CDN drops zod
-    await expect(registry.ensurePackages(['zod'])).rejects.toThrow(/Could not resolve package.*"zod@\^3\.23\.0"/);
-    await expect(registry.ensurePackages(['zod'])).rejects.toThrow(/zod/);
+    const outcomes = await Promise.allSettled([registry.ensurePackages(['zod']), registry.ensurePackages(['zod'])]);
+    expect(outcomes.map(result => result.status)).toEqual(['rejected', 'rejected']);
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
-
-    registry.setDeclared({ ...DECLARED, zod: '^3.22.0' });
-    await Promise.resolve();
     await registry.ensurePackages(['zod']);
     expect(mockedFetchManifest).toHaveBeenLastCalledWith(
-      { zod: '^3.22.0' },
-      expect.objectContaining({ zod: '^3.22.0' }),
+      { zod: '^3.23.0' },
+      expect.objectContaining({ zod: '^3.23.0' }),
       { zod: ['.'] },
     );
     expect(registry.modules.has('zod')).toBe(true);
+  });
+
+  it.each(['before', 'after'])('rolls back expanded entries when a sibling fails, including expansion finishing %s rollback', async timing => {
+    await registry.ensureEntries('three', ['.']);
+    const three = registry.modules.get('three')!;
+    const filesBefore = three.files;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let expanded!: () => void;
+    const expansionStarted = new Promise<void>(resolve => { expanded = resolve; });
+    mockedFetchManifest.mockResolvedValue([
+      { n: 'three', v: '0.160.1', d: 0, e: ['./addons/x.js'] },
+      { n: 'zod', v: '3.23.8', d: 1 },
+    ]);
+    mockedFetchModuleEntries.mockImplementationOnce(async () => {
+      expanded();
+      if (timing === 'after') await gate;
+      return { f: { 'x.js': { c: 'module.exports = 42;', d: [], t: true } }, m: ['zod'] };
+    });
+    mockedFetchModule.mockImplementationOnce(async () => {
+      await expansionStarted;
+      if (timing === 'before') await new Promise(resolve => setTimeout(resolve, 5));
+      throw new Error('transient failure');
+    });
+    await expect(registry.ensureEntries('three', ['./addons/x.js'])).rejects.toThrow('transient failure');
+    expect(three.files).toBe(filesBefore);
+    expect([...three.entries]).toEqual(['.']);
+    mockedFetchModuleEntries.mockResolvedValue({ f: { 'x.js': { c: 'module.exports = 43;', d: [], t: true } }, m: ['zod'] });
+    mockedFetchModule.mockResolvedValue({ f: {}, m: [] });
+    await registry.ensureEntries('three', ['./addons/x.js']);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(three.files['x.js']).toMatchObject({ c: 'module.exports = 43;' });
+    expect(three.entries.has('./addons/x.js')).toBe(true);
+    expect(registry.modules.has('zod')).toBe(true);
+    expect(mockedFetchModuleEntries).toHaveBeenCalledTimes(2);
   });
 
   it('expands an installed package with a deep entry at its installed release, with the entry\'s packages', async () => {

@@ -90,6 +90,7 @@ export class ModuleRegistry {
   private nextBatch: { imports: Imports; done: Promise<void> } | null = null;
   // In-flight entry expansions of installed packages, per `name\0entry`.
   private expansions: Map<string, Promise<void>> = new Map();
+  private installGeneration = 0;
   private installChain: Promise<void> = Promise.resolve();
   // Batches queued or running; while any is, a package may be visible before
   // its dependency closure is (`whenIdle`).
@@ -231,10 +232,6 @@ export class ModuleRegistry {
    */
   setDeclared(declared: DepMap): void {
     this.declared = sortObj(declared);
-    // A failed install may succeed against the edited range.
-    for (const [key, install] of this.installs) {
-      install.catch(() => this.installs.delete(key));
-    }
   }
 
   /** Install the root entry of each declared package that is not installed. */
@@ -261,6 +258,11 @@ export class ModuleRegistry {
       if (!install) {
         install = this.enqueueInstall(name, entry);
         this.installs.set(key, install);
+        const current = install;
+        // A transient network failure must be retryable with the same manifest.
+        current.catch(() => {
+          if (this.installs.get(key) === current) this.installs.delete(key);
+        });
       }
       waits.push(install);
     }
@@ -320,7 +322,10 @@ export class ModuleRegistry {
     const resolved = await fetchManifest(sortObj(request), this.pins(), entries);
     const manifestBefore = this.manifest;
     const fallbacksBefore = new Map(this.esmFallbacks);
-    const modulesBefore = new Set(this.modules.keys());
+    const modulesBefore = new Map([...this.modules].map(([name, module]) => [name, {
+      module, files: module.files, modules: module.modules, entries: new Set(module.entries),
+    }]));
+    const compiledBefore = new Map(this.bundler.modules);
     const known = new Set(manifestBefore.map((dep) => dep.n));
     this.manifest = [...manifestBefore, ...resolved.filter((dep) => !known.has(dep.n))];
     try {
@@ -331,13 +336,30 @@ export class ModuleRegistry {
       await this.fetchUsedModuleClosure();
       await this.loadModuleDependencies();
     } catch (err) {
+      this.installGeneration++;
+      this.expansions.clear();
       for (const download of this.moduleDownloadPromises.values()) this.cancelledDownloads.add(download);
       this.manifest = manifestBefore;
       this.esmFallbacks = fallbacksBefore;
       for (const name of [...this.modules.keys()]) {
-        if (modulesBefore.has(name)) continue;
-        this.modules.delete(name);
-        this.bundler.forgetNodeModule?.(name);
+        const before = modulesBefore.get(name);
+        if (!before) {
+          this.modules.delete(name);
+          this.bundler.forgetNodeModule?.(name);
+        } else {
+          const changed = before.module.files !== before.files || before.module.entries.size !== before.entries.size;
+          before.module.files = before.files;
+          before.module.modules = before.modules;
+          before.module.entries = before.entries;
+          if (changed) {
+            this.bundler.forgetNodeModule?.(name);
+            // Keep prior evaluations (notably React's identity) while discarding
+            // any files linked from the failed expansion.
+            for (const [path, module] of compiledBefore) {
+              if (path.startsWith(`/node_modules/${name}/`)) this.bundler.modules.set(path, module);
+            }
+          }
+        }
       }
       throw err;
     }
@@ -445,12 +467,14 @@ export class ModuleRegistry {
 
   /** Install a tree entry with its entries, or add them to an installed package. */
   private async installEntries(dep: IResolvedDependency): Promise<void> {
+    const generation = this.installGeneration;
     const item = `${dep.n}@${dep.v}`;
     this.bundler.reportProgress?.({ phase: 'dependencies', item,
       completed: this.preloadCompleted ?? undefined,
       total: this.preloadCompleted === null ? undefined : this.manifest.length });
     const entries = dep.e?.length ? dep.e : [ROOT_ENTRY];
     const nodeModule = await this.fetchNodeModule(dep.n, dep.v, dep.s, entries);
+    if (generation !== this.installGeneration) return;
     await this.expandModule(nodeModule, entries);
     if (this.preloadCompleted !== null) this.preloadCompleted++;
     this.bundler.reportProgress?.({ phase: 'dependencies', item, done: true,
@@ -460,8 +484,8 @@ export class ModuleRegistry {
 
   /**
    * Inline the closures of `entries` into an installed package. Content is
-   * immutable per release, so an expansion that fails leaves nothing to undo:
-   * its entries are just not recorded, and the next request retries them.
+   * immutable per release. A failed batch restores its snapshot and invalidates
+   * late expansions so a retry cannot inherit an incomplete dependency closure.
    */
   private async expandModule(nodeModule: NodeModule, entries: string[]): Promise<void> {
     const release = nodeModule.release;
@@ -477,14 +501,18 @@ export class ModuleRegistry {
         const key = `${nodeModule.name}\0${entry}`;
         let expansion = this.expansions.get(key);
         if (!expansion) {
+          const generation = this.installGeneration;
           expansion = fetchModuleEntries(release.name, release.version, [entry])
             .then((part) => {
+              if (generation !== this.installGeneration) return;
               const merged = mergeModuleParts({ f: nodeModule.files, m: nodeModule.modules }, [part]);
               nodeModule.files = merged.f;
               nodeModule.modules = merged.m;
               nodeModule.entries.add(entry);
             })
-            .finally(() => this.expansions.delete(key));
+            .finally(() => {
+              if (this.expansions.get(key) === expansion) this.expansions.delete(key);
+            });
           this.expansions.set(key, expansion);
         }
         return expansion;

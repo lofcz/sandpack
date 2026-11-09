@@ -36,9 +36,32 @@ describe('scanCjsModule', () => {
     expect(scanCjsModule(`export*from"y";`).isEsm).toBe(true);
   });
 
-  it('does NOT treat dynamic import() or import.meta as ESM statements', () => {
-    expect(scanCjsModule(`const m = import("y");`).isEsm).toBe(false);
-    expect(scanCjsModule(`const u = import.meta.url;`).isEsm).toBe(false);
+  it('transforms dynamic import and import.meta for the sandbox runtime', () => {
+    expect(scanCjsModule(`const m = import("y");`).isEsm).toBe(true);
+    expect(scanCjsModule(`const u = import.meta.url;`).isEsm).toBe(true);
+  });
+
+  it('collects decoded specifiers inside nested template expressions', () => {
+    const source = 'module.exports = `outer ${`inner ${require("re\\x61ct")}`} ${require("scheduler")}`;';
+    expect(scanCjsModule(source)).toEqual({ requires: ['react', 'scheduler'], isEsm: false });
+  });
+
+  it('distinguishes property names and control-flow regex literals from imports', () => {
+    expect(scanCjsModule('if (ok) /require("fake")/.test(s); const x = { export: 1, import: 2 }; require("real");'))
+      .toEqual({ requires: ['real'], isEsm: false });
+  });
+
+  it('routes unsupported syntax to the compiler instead of executing it raw', () => {
+    expect(scanCjsModule('const x: number = 1; module.exports = x;').isEsm).toBe(true);
+    expect(scanCjsModule('module.exports = <div />;').isEsm).toBe(true);
+  });
+
+  it('defers locally bound require and computed specifiers to the scope-aware compiler', () => {
+    expect(scanCjsModule('function loader(require) { return require("not-an-npm-package"); }').isEsm).toBe(true);
+    expect(scanCjsModule('function loader({ require }) { return require("local"); }').isEsm).toBe(true);
+    expect(scanCjsModule('const name = "react"; module.exports = require(name);').isEsm).toBe(true);
+    expect(scanCjsModule('module.exports = require("react" + "-dom");').isEsm).toBe(true);
+    expect(scanCjsModule('module.exports = require("react", true);').requires).toEqual(['react']);
   });
 
   // R3-233: a regex literal whose body holds a quote or `/` used to desync the
@@ -77,8 +100,10 @@ describe('isPassthroughCjs', () => {
     expect(isPassthroughCjs('/node_modules/some-esm/index.mjs', 'module.exports={}')).toBe(false);
   });
 
-  it('treats .cjs as CommonJS regardless of body', () => {
-    expect(isPassthroughCjs('/node_modules/pkg/x.cjs', 'whatever')).toBe(true);
+  it('checks .cjs syntax and always compiles TypeScript extensions', () => {
+    expect(isPassthroughCjs('/node_modules/pkg/x.cjs', 'module.exports = import("react");')).toBe(false);
+    expect(isPassthroughCjs('/node_modules/pkg/x.cts', 'module.exports = 1;')).toBe(false);
+    expect(isPassthroughCjs('/node_modules/pkg/x.ts', 'const x: number = 1;')).toBe(false);
   });
 
   it('never passes through app source', () => {

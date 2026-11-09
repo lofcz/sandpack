@@ -24,6 +24,7 @@ const MIME_TYPES: Record<string, string> = {
   woff2: 'font/woff2',
   ttf: 'font/ttf',
   otf: 'font/otf',
+  wasm: 'application/wasm',
 };
 
 export const ASSET_EXTENSIONS = Object.keys(MIME_TYPES);

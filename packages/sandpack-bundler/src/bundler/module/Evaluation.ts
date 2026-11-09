@@ -26,27 +26,12 @@ class EvaluationContext {
   }
 
   async getModuleEvaluationContext(moduleName: string): Promise<EvaluationContext> {
-    const resolvedModuleName = (await this.resolve(moduleName));
-    let moduleToEvaluate = this.evaluation.module.bundler.modules.get(resolvedModuleName)
-    if (moduleToEvaluate && moduleToEvaluate.compiled != null) {
-      return moduleToEvaluate.evaluation!.context
-    }
+    const resolvedModuleName = await this.resolve(moduleName);
+    const bundler = this.evaluation.module.bundler;
     await this.evaluation.module.addDependency(resolvedModuleName);
-    moduleToEvaluate = await this.evaluation.module.bundler.transformModule(resolvedModuleName);
-    // @ts-ignore
-    const allDependencies = [...moduleToEvaluate.dependencyMap.values()];
-    // wait for all deps to be compiled before evaluating the module to ensure correct execution
-    await this.evaluation.module.bundler.transformationQueue.onIdle();
-    const evaluatedDeps = await Promise.all(
-      allDependencies.map(
-        moduleName => this.evaluation.module.bundler.modules.get(moduleName)
-      ).filter(
-        mod => mod && (mod.compiled === null)
-      ).map(
-        mod => this.evaluation.module.bundler.transformationQueue.getItem(mod!.filepath)?.then(mod => mod.evaluate())
-      )
-    );
-    return moduleToEvaluate.evaluate().context
+    const moduleToEvaluate = await bundler.transformModule(resolvedModuleName);
+    await bundler.moduleFinishedPromise(resolvedModuleName);
+    return moduleToEvaluate.evaluate().context;
   }
 
   async resolve(moduleName: string): Promise<string> {
@@ -63,10 +48,12 @@ export class Evaluation {
 
   constructor(module: Module) {
     this.module = module;
-
-    const code = module.compiled + `\n//# sourceURL=${location.origin}${this.module.filepath}`;
-
     this.context = new EvaluationContext(this);
+  }
+
+  run(): void {
+    const module = this.module;
+    const code = module.compiled + `\n//# sourceURL=${location.origin}${module.filepath}`;
     this.context.exports = evaluate(code, this.require.bind(this), this.context, {}, {
       [IMPORT_META_GLOBAL]: Object.freeze({ url: new URL(module.filepath, location.href).href }),
     });
@@ -102,6 +89,6 @@ export class Evaluation {
           `was never transpiled. Required by "${this.module.filepath}".`
       );
     }
-    return module.evaluate().context.exports ?? {};
+    return module.evaluate().context.exports;
   }
 }

@@ -23,7 +23,10 @@ function ensureLightningcss(): Promise<void> {
       typeof lightningcssWasmUrl === 'string' && /^(https?:|blob:|data:)/i.test(lightningcssWasmUrl)
         ? lightningcssWasmUrl
         : new URL(String(lightningcssWasmUrl), self.location.href).href;
-    initPromise = initLightningcss(wasmUrl);
+    initPromise = initLightningcss(wasmUrl).catch(error => {
+      initPromise = null;
+      throw error;
+    });
   }
   return initPromise;
 }
