@@ -349,15 +349,11 @@ export class SandpackRuntime extends SandpackClient {
       return undefined;
     }
 
-    // A reload re-runs this handshake; terminate the previous worker first so
-    // we don't leak one per reload.
-    this.babelWorker?.terminate();
-
     // Classic (not module) worker: the bundled worker lazily loads its Babel
     // plugin/preset chunks via importScripts(), which a `{ type: "module" }`
     // worker forbids. The worker artifact is built with outputFormat "global"
     // to match (see sandpack-bundler's babelWorker Parcel target).
-    const worker = new Worker(workerURL);
+    const worker = this.babelWorker ?? new Worker(workerURL);
     this.babelWorker = worker;
 
     const channel = new MessageChannel();
@@ -478,6 +474,16 @@ export class SandpackRuntime extends SandpackClient {
     this.immutableFetchProtocol?.dispose();
     this.babelWorker?.terminate();
     this.babelWorker = null;
+    // Download and initialize the compiler alongside the iframe bootstrap.
+    // Only an authorized register-frame handshake receives its MessagePort;
+    // warming the parent-owned worker grants the document no capabilities.
+    if (this.options.babelWorkerURL) {
+      try {
+        this.babelWorker = new Worker(this.options.babelWorkerURL);
+      } catch {
+        // Registration retries and reports the normal worker creation error.
+      }
+    }
     const urlSource = this.options.startRoute
       ? new URL(this.options.startRoute, this.bundlerURL).toString()
       : this.bundlerURL;

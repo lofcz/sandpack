@@ -26,8 +26,20 @@ describe("runtime navigation and registration ownership", () => {
   let onUnexpectedNavigation: jest.Mock;
   let warnings: jest.SpyInstance;
   let errors: jest.SpyInstance;
+  let workers: { postMessage: jest.Mock; terminate: jest.Mock }[];
+  const originalWorker = globalThis.Worker;
+  const originalMessageChannel = globalThis.MessageChannel;
 
   beforeEach(() => {
+    workers = [];
+    globalThis.Worker = jest.fn().mockImplementation(() => {
+      const worker = { postMessage: jest.fn(), terminate: jest.fn() };
+      workers.push(worker);
+      return worker;
+    });
+    globalThis.MessageChannel = jest.fn().mockImplementation(() => ({
+      port1: { close: jest.fn() }, port2: { close: jest.fn() },
+    }));
     warnings = jest.spyOn(console, "warn").mockImplementation(() => {});
     errors = jest.spyOn(console, "error").mockImplementation(() => {});
     port = { close: jest.fn() };
@@ -68,6 +80,7 @@ describe("runtime navigation and registration ownership", () => {
       },
       {
         bundlerURL: "https://host.example/sandpack/",
+        babelWorkerURL: "/babel-worker.js",
         startRoute: "preview",
         sandpackCdnRoot: "https://host.example/sandpack-cdn/",
         immutableUrlPrefixes: [
@@ -82,6 +95,8 @@ describe("runtime navigation and registration ownership", () => {
     client.destroy();
     warnings.mockRestore();
     errors.mockRestore();
+    globalThis.Worker = originalWorker;
+    globalThis.MessageChannel = originalMessageChannel;
   });
 
   const send = (
@@ -103,6 +118,21 @@ describe("runtime navigation and registration ownership", () => {
     frameWindow.postMessage.mock.calls
       .map(([message]) => message)
       .filter((message) => message.type === "register-frame");
+
+  it("warms one compiler per host navigation and only connects it after authorized boot", async () => {
+    expect(workers).toHaveLength(1);
+    expect(workers[0].postMessage).not.toHaveBeenCalled();
+    send({ type: "initialized" });
+    await flush();
+    expect(workers).toHaveLength(1);
+    expect(workers[0].postMessage).toHaveBeenCalledTimes(1);
+    client.dispatch({ type: "refresh" });
+    expect(workers[0].terminate).toHaveBeenCalledTimes(1);
+    expect(workers).toHaveLength(2);
+    expect(workers[1].postMessage).not.toHaveBeenCalled();
+    client.destroy();
+    expect(workers[1].terminate).toHaveBeenCalledTimes(1);
+  });
 
   it("boots with the host CDN and dependency overlays intact", async () => {
     expect(navigate.mock.calls).toEqual([
