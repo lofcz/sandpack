@@ -13,7 +13,7 @@ type Edit = { start: number; end: number; text: string };
 
 export interface CssAnalysis {
   requiresTailwind: boolean;
-  /** Non-framework imports or actual url() values need the CSS resolver. */
+  /** Local/package imports and relative url() values need the CSS resolver. */
   requiresResolution: boolean;
   /** Compiler-ready CSS; unrelated source bytes and import order are preserved. */
   css: string;
@@ -76,6 +76,12 @@ function importTarget(node: CssNode | null | undefined): string | null {
     return value.children.first?.type === 'Url' ? value.children.first.value : null;
   }
   return null;
+}
+
+// These references are already browser-ready. Sending a remote font import or
+// embedded image through the bundler needlessly downloads/initializes CSS WASM.
+function browserUrl(target: string | null): boolean {
+  return target !== null && /^(?:https?:|data:|blob:|\/\/|#)/i.test(target);
 }
 
 /** The CSS resolver can add inherited layer/supports/media qualifiers when an
@@ -144,7 +150,7 @@ export function analyzeCss(source: string): CssAnalysis {
   const editBoth = (edit: Edit) => { edits.push(edit); resolverEdits.push(edit); };
   walk(ast, (node) => {
     if (node.type === 'Url' || (node.type === 'Function' && ident.decode(node.name).toLowerCase() === 'url')) {
-      result.requiresResolution = true;
+      if (!browserUrl(importTarget(node))) result.requiresResolution = true;
     }
     if (node.type !== 'Atrule') return;
     const name = ident.decode(node.name).toLowerCase();
@@ -174,7 +180,7 @@ export function analyzeCss(source: string): CssAnalysis {
         const marker = `data:text/css,sandpack-tailwind-${markerScope}-${markers.size}`;
         markers.set(marker, text);
         resolverEdits.push({ start, end, text: `@import ${generate({ type: 'String', value: marker })};` });
-      } else {
+      } else if (node.block || !browserUrl(target)) {
         result.requiresResolution = true;
       }
     }

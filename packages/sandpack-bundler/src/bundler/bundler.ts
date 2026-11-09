@@ -218,6 +218,7 @@ export class Bundler {
   // Transform results the boot scan produced (`scanModuleSpecifiers`), keyed by
   // path with the source they were made from; compile adopts each once.
   private bootTranspiles = new Map<string, { source: string; result: TranspileResult }>();
+  private selfHostLoaders = new Map<string, () => Promise<void>>();
 
   private readonly mountLifecycle = new MountLifecycle();
   private onMetadataChangeEmitter = new DelayedEmitter<MetadataChange>();
@@ -696,12 +697,16 @@ export class Bundler {
     return path;
   }
 
-  /** Resolve without installing or expanding anything. */
+  /** Resolve without expanding CDN packages; materialize bundled platform modules on demand. */
   async resolveInstalled(
     specifier: string,
     filename: string,
     extensions: string[] = DEFAULT_EXTENSIONS
   ): Promise<string> {
+    const moduleName = packageName(specifier.startsWith('/node_modules/')
+      ? specifier.slice('/node_modules/'.length) : specifier);
+    const load = moduleName ? this.selfHostLoaders.get(moduleName) : undefined;
+    if (load) await load();
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node
     // resolution is dir-relative, so two files in the same dir resolve a specifier
@@ -1081,11 +1086,24 @@ export class Bundler {
             `(SDK_PACKAGING_SPEC §5.2: a missing manifest entry fails closed.)`,
         );
       }
-      await this.vendorModuleFrom(
-        moduleName,
-        baseUrl,
-        decision.action === 'verify' ? decision.hashes : undefined,
-      );
+      // Validate the pin at boot as before, but fetch only if the module graph
+      // reaches this package. Ordinary workspaces must not wait for an unused
+      // SDK hosted on a different origin. Resolution during the import scan also
+      // uses this loader, so the SDK's own dependencies enter the initial graph.
+      let pending: Promise<void> | undefined;
+      this.selfHostLoaders.set(moduleName, () => {
+        if (!pending) {
+          pending = this.vendorModuleFrom(
+            moduleName,
+            baseUrl,
+            decision.action === 'verify' ? decision.hashes : undefined,
+          ).then(() => this.forgetMissingNodeModules()).catch(error => {
+            pending = undefined;
+            throw error;
+          });
+        }
+        return pending;
+      });
     }
   }
 

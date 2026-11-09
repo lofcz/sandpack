@@ -72,6 +72,22 @@ await build({
   sourcemap: false,
   legalComments: 'none',
   alias,
+  plugins: [{
+    name: 'reuse-worker-compiler-helpers',
+    setup(builder) {
+      // Scope substitutions to the pinned plugins, preserving other consumers.
+      builder.onResolve({ filter: /^@babel\/core$/ }, ({ importer }) => {
+        if (importer.includes('/@babel/plugin-proposal-explicit-resource-management/')) {
+          return { path: join(ROOT, 'scripts', 'worker-babel-core.mjs') };
+        }
+      });
+      builder.onResolve({ filter: /^crypto$/ }, ({ importer }) => {
+        if (importer.includes('/react-refresh/')) {
+          return { path: join(ROOT, 'scripts', 'worker-crypto.mjs') };
+        }
+      });
+    },
+  }],
   inject: [SHIM],
   // `worker` before esbuild's implicit `browser` picks DOM-free package variants
   // (gotcha #1 above). `import`/`default` keep ESM-only deps (mdx/unified) resolving.

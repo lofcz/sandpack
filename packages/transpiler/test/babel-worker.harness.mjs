@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { MessageChannel } from 'node:worker_threads';
 
-import { compileMdx } from '../dist/index.js';
+import { compileMdx, transformBabel, selectReactChain } from '../dist/index.js';
 import { CORPUS } from './corpus.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -148,6 +148,25 @@ export const Counter = (props: {start: number}) => {
 // must run in a DOM-free worker (the reason it historically compiled in-iframe).
 // The vm shim above provides NO `document`, so a regression to a DOM-using package
 // variant (e.g. decode-named-character-reference's browser build) fails here.
+test('worker helper deduplication preserves compiler output across the source corpus', async () => {
+  const { request, close } = openWorker();
+  try {
+    for (const c of CORPUS.filter((c) => /\.[cm]?[jt]sx?$/.test(c.file))) {
+      const data = {
+        code: readFileSync(join(FIXTURES_DIR, c.file), 'utf8'),
+        filepath: c.path,
+        config: selectReactChain(c.path).babelConfig,
+      };
+      const expected = await transformBabel(data);
+      const actual = await request('transform', data);
+      assert.equal(actual.code, expected.code, c.id);
+      assert.deepEqual([...actual.dependencies], [...expected.dependencies], c.id);
+    }
+  } finally {
+    close();
+  }
+});
+
 test('worker `mdx-compile` is byte-identical to in-process compileMdx across the MDX corpus', async () => {
   const { request, close } = openWorker();
   const mdxCases = CORPUS.filter((c) => /\.mdx?$/.test(c.file));

@@ -12,14 +12,23 @@
  * without a build.
  */
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, relative, sep } from 'node:path';
+import { join, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import { computeToolchainHash } from '@lofcz/transpiler';
 
 const require = createRequire(import.meta.url);
-const pkgDir = dirname(require.resolve('@lofcz/transpiler/package.json'));
+const installed = require.resolve('@lofcz/transpiler/package.json');
+// A workspace link includes unpublished sources/tests. Release builds can point
+// at an installed npm artifact so the stamp matches the consuming app/CLI.
+const pkgDir = process.env.TRANSPILER_PACKAGE_ROOT
+  ? resolve(process.env.TRANSPILER_PACKAGE_ROOT) : dirname(installed);
+const expected = JSON.parse(readFileSync(installed, 'utf8'));
+const actual = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+if (actual.name !== expected.name || actual.version !== expected.version) {
+  throw new Error('Transpiler artifact must match the workspace package name and version');
+}
 
 // Walk the installed package dir (= extracted published tarball), keyed by
 // package-relative path. Mirrors the CLI's collectPackageFiles.

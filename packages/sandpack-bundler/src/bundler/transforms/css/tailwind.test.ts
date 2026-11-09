@@ -41,6 +41,21 @@ it('leaves ordinary CSS and code in comments on the normal style path', async ()
   expect(result.code).toContain('text/css');
 });
 
+it('keeps remote fonts and embedded images browser-native without loading CSS WASM', async () => {
+  const source = '@import url("https://fonts.googleapis.com/css2?family=Inter");\n.logo{background:url("data:image/svg+xml,<svg/>")}';
+  const ctx = { module: { id: 'fonts', filepath: '/app/styles.css' }, code: source } as ITranspilationContext;
+  const css = new CSSTransformer();
+  const loader = jest.spyOn(css, 'getLoader');
+  const result = await css.transform(ctx, {});
+  if (result instanceof Error) throw result;
+  expect(loader).not.toHaveBeenCalled();
+  expect(result.code).toBe(source);
+  const js = await new StyleTransformer().transform({ ...ctx, code: result.code }, {});
+  if (js instanceof Error) throw js;
+  expect(js.dependencies.size).toBe(0);
+  expect(js.code).toContain('fonts.googleapis.com');
+});
+
 it('preserves framework import options instead of silently enabling preflight', async () => {
   const source = '@import "tailwindcss/utilities" layer(utilities);';
   const result = await new CSSTransformer().transform({ module: { filepath: '/app/styles.css' }, code: source } as ITranspilationContext, {});

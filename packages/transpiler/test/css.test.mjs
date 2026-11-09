@@ -84,6 +84,21 @@ test('only actual resource syntax invokes CSS resolution', () => {
   }
 });
 
+test('browser-ready fonts and images bypass CSS resolution without rewriting source', () => {
+  for (const css of [
+    '@import "https://fonts.googleapis.com/css2?family=Inter" layer(fonts) supports(display:grid) screen;',
+    '@import url(//example.com/fonts.css);',
+    String.raw`@\69mport u\72l("https://example.com/font.css");`,
+    'a{background:url("data:image/svg+xml,<svg/>");mask:url(#icon);cursor:url(https://example.com/cursor.png),auto}',
+    ':root{--image:url(blob:https://example.com/123)}',
+  ]) {
+    const analysis = analyzeCss(css);
+    assert.equal(analysis.requiresResolution, false, css);
+    assert.equal(analysis.css, css);
+  }
+  assert.equal(analyzeCss('@import "https://example.com/fonts.css"; @import "./layout.css";').requiresResolution, true);
+});
+
 test('normalizes parsed escaped imports and directives for the browser compiler', () => {
   const result = analyzeCss(String.raw`@\69mport url(\74 ailwindcss) layer(utilities); a{ @\61pply p-4; }`);
   assert.equal(result.css, '@import "tailwindcss" layer(utilities); a{ @apply p-4; }');
