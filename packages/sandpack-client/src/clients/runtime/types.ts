@@ -9,11 +9,13 @@ import type {
   SandpackLogLevel,
   SandpackMessageConsoleMethods,
   SandpackTemplate,
+  SandpackBuildProgress,
 } from "../..";
 
 export type SandpackRuntimeMessage = BaseSandpackMessage &
   (
     | { type: "request-refresh" }
+    | ({ type: "build-progress" } & SandpackBuildProgress)
     | {
         type: "initialized";
       }

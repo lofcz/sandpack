@@ -305,6 +305,15 @@ export type ClientStatus =
   /** Bundler is about to `location.reload()` (deps/HTML); not a terminal settle. */
   | "reloading";
 
+/** Actual work reported by the bundler; totals are omitted until known. */
+export interface SandpackBuildProgress {
+  phase: "preparing" | "scanning" | "resolving" | "dependencies" | "linking" | "compiling" | "rendering";
+  item?: string;
+  completed?: number;
+  total?: number;
+  done?: boolean;
+}
+
 export type SandpackMessageConsoleMethods =
   | "log"
   | "debug"
