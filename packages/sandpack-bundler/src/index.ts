@@ -43,6 +43,7 @@ import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
 import { registerParentImmutableFetch, ParentImmutableFetchResult } from './utils/fetch';
 import * as logger from './utils/logger';
+import { readBootNonce } from './protocol/bootNonce';
 
 const bundlerStartTime = Date.now();
 
@@ -131,7 +132,9 @@ class SandpackInstance {
 
     // Send 'initialized' now — the parent waits for this before it sends
     // 'register-frame' with the MessagePort in the transferable list.
-    this.messageBus.sendMessage('initialized');
+    // Echo the boot nonce of the navigation that loaded this page so the host
+    // can tell it from an overtaken navigation's page.
+    this.messageBus.sendMessage('initialized', readBootNonce());
 
     // SDK_PACKAGING_SPEC §4: publish the runtime-discovery global so a
     // bundled-from-npm SDK can find the runtime + transport without injection

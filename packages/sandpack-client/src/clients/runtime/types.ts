@@ -18,6 +18,8 @@ export type SandpackRuntimeMessage = BaseSandpackMessage &
     | ({ type: "build-progress" } & SandpackBuildProgress)
     | {
         type: "initialized";
+        /** The boot nonce of the navigation that loaded this page. */
+        boot?: string;
       }
     | {
         type: "start";

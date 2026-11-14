@@ -70,4 +70,53 @@ describe("InitializationGuard (R3-353)", () => {
     // setLocationURLIntoIFrame, which is what keeps arm and navigate together.
     expect(new InitializationGuard().pending).toBe(0);
   });
+
+  describe("boot nonces", () => {
+    it("honours its own nonce and drops the overtaken ones with it", () => {
+      const guard = new InitializationGuard();
+      guard.arm();
+      const second = guard.arm();
+      expect(guard.decide(second)).toBe("accept");
+      expect(guard.pending).toBe(0);
+    });
+
+    it("ignores an earlier navigation's page while a newer one is armed", () => {
+      const guard = new InitializationGuard();
+      const first = guard.arm();
+      const second = guard.arm();
+      guard.decide(second);
+      const third = guard.arm();
+      expect(guard.decide(first)).toBe("stale");
+      expect(guard.decide(third)).toBe("accept");
+      expect(guard.isDetached).toBe(false);
+    });
+
+    it("recognises a page navigated by the previous client on the same frame", () => {
+      const issued = new Set<string>();
+      const previous = new InitializationGuard(issued);
+      const old = previous.arm();
+      const next = new InitializationGuard(issued);
+      const own = next.arm();
+      expect(next.decide(old)).toBe("stale");
+      expect(next.decide(own)).toBe("accept");
+    });
+
+    it("REFUSES a nonce it never issued, and a replayed one with nothing armed", () => {
+      const forged = new InitializationGuard();
+      forged.arm();
+      expect(forged.decide("0".repeat(32))).toBe("refuse");
+      expect(forged.isDetached).toBe(true);
+
+      const replayed = new InitializationGuard();
+      const own = replayed.arm();
+      expect(replayed.decide(own)).toBe("accept");
+      expect(replayed.decide(own)).toBe("refuse");
+    });
+
+    it("REFUSES a non-string nonce", () => {
+      const guard = new InitializationGuard();
+      guard.arm();
+      expect(guard.decide(42)).toBe("refuse");
+    });
+  });
 });

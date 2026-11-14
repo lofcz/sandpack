@@ -26,7 +26,19 @@ import {
 } from "./gestureGate";
 import { IFrameProtocol } from "./iframe-protocol";
 import { handleImmutableFetch } from "./immutable-fetch-protocol";
-import { InitializationGuard } from "./initialization-guard";
+import { BOOT_NONCE_PARAM, InitializationGuard } from "./initialization-guard";
+
+/**
+ * Boot nonces issued per iframe element, shared by the clients that drive it
+ * one after another: a new client must recognise the page of the navigation its
+ * predecessor started as an overtaken one, not as a rogue boot.
+ */
+const bootNoncesByFrame = new WeakMap<HTMLIFrameElement, Set<string>>();
+function issuedBootNonces(iframe: HTMLIFrameElement): Set<string> {
+  let issued = bootNoncesByFrame.get(iframe);
+  if (!issued) bootNoncesByFrame.set(iframe, (issued = new Set()));
+  return issued;
+}
 import { EXTENSIONS_MAP } from "./mime";
 import type {
   IPreviewRequestMessage,
@@ -81,7 +93,7 @@ export class SandpackRuntime extends SandpackClient {
    * nothing armed, which is the whole check. See `initialization-guard.ts` for
    * why the parent asks "did I put you there?" rather than "where are you?".
    */
-  private readonly initGuard = new InitializationGuard();
+  private readonly initGuard: InitializationGuard;
 
   constructor(
     selector: string | HTMLIFrameElement,
@@ -120,6 +132,7 @@ export class SandpackRuntime extends SandpackClient {
     // (created or passed) is verified to carry no `allow-same-origin`.
     ensureSandboxed(this.iframe, this.options.stance);
 
+    this.initGuard = new InitializationGuard(issuedBootNonces(this.iframe));
     this.setLocationURLIntoIFrame();
 
     this.iframeProtocol = new IFrameProtocol(this.iframe, this.bundlerURL);
@@ -151,7 +164,7 @@ export class SandpackRuntime extends SandpackClient {
         // question and one it can answer: every legitimate (re)boot follows a
         // navigation THIS CLIENT performed (the constructor, and the `refresh`
         // dispatch), both of which go through `setLocationURLIntoIFrame`.
-        if (!this.consumeExpectedInitialization()) return;
+        if (!this.consumeExpectedInitialization(mes.boot)) return;
         const version = ++this.initializationVersion;
         // this may not work with a boundedcontext, it may require an actual FS instance
         const remotePortPromise = this.fs.connectRemote();
@@ -492,10 +505,14 @@ export class SandpackRuntime extends SandpackClient {
     // so the boot that follows it is legitimate. Every legitimate (re)boot in the
     // system passes through here — the constructor and the `refresh` dispatch —
     // which is exactly what makes "nothing armed" mean "not ours".
-    this.initGuard.arm();
+    const nonce = this.initGuard.arm();
+    // The page echoes its navigation's nonce, so a page of an overtaken
+    // navigation cannot spend the credit of the one that replaces it.
+    const url = new URL(urlSource, document.baseURI);
+    url.searchParams.set(BOOT_NONCE_PARAM, nonce);
     // One navigation per armed boot. Calling location.replace as well can
     // schedule a second load and also throws for a cross-origin document.
-    this.iframe.src = urlSource;
+    this.iframe.src = url.toString();
   }
 
   /**
@@ -507,8 +524,12 @@ export class SandpackRuntime extends SandpackClient {
    * `onUnexpectedNavigation` so it can surface or re-create the frame. Nothing is
    * connected and nothing is registered, so no fs port is ever minted for it.
    */
-  private consumeExpectedInitialization(): boolean {
-    if (this.initGuard.consume()) return true;
+  private consumeExpectedInitialization(nonce?: unknown): boolean {
+    const decision = this.initGuard.decide(nonce);
+    if (decision === "accept") return true;
+    // A page of a navigation this frame has since overtaken: the newer one
+    // replaces it, and nothing is connected or registered for it meanwhile.
+    if (decision === "stale") return false;
     if (this.refusedBoot) return false; // already torn down; stay quiet
     this.refusedBoot = true;
     console.error(

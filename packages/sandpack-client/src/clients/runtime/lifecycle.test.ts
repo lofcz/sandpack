@@ -136,7 +136,7 @@ describe("runtime navigation and registration ownership", () => {
 
   it("boots with the host CDN and dependency overlays intact", async () => {
     expect(navigate.mock.calls).toEqual([
-      ["https://host.example/sandpack/preview"],
+      [expect.stringMatching(/^https:\/\/host\.example\/sandpack\/preview\?sandpack-boot=[0-9a-f]{32}$/)],
     ]);
     send({ type: "initialized" });
     await flush();
@@ -163,8 +163,8 @@ describe("runtime navigation and registration ownership", () => {
     send({ type: "request-refresh" });
     send({ type: "request-refresh" });
     expect(navigate.mock.calls).toEqual([
-      ["https://host.example/sandpack/preview"],
-      ["https://host.example/sandpack/preview"],
+      [expect.stringMatching(/^https:\/\/host\.example\/sandpack\/preview\?sandpack-boot=/)],
+      [expect.stringMatching(/^https:\/\/host\.example\/sandpack\/preview\?sandpack-boot=/)],
     ]);
     expect(
       frameWindow.postMessage.mock.calls.some(
@@ -268,5 +268,55 @@ describe("runtime navigation and registration ownership", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  const bootOf = (call: number) =>
+    new URL(navigate.mock.calls[call][0] as string).searchParams.get("sandpack-boot");
+
+  it("ignores the page of an overtaken navigation and registers the one that replaces it", async () => {
+    const first = bootOf(0);
+    client.dispatch({ type: "refresh" });
+    const second = bootOf(1);
+    expect(second).not.toBe(first);
+    // The first navigation's page still boots before the second replaces it.
+    send({ type: "initialized", boot: first });
+    await flush();
+    send({ type: "initialized", boot: second });
+    await flush();
+    expect(onUnexpectedNavigation).not.toHaveBeenCalled();
+    expect(registrations()).toHaveLength(2);
+    // Nothing is left armed: the bundler's next reload request is honoured.
+    send({ type: "request-refresh" });
+    expect(navigate).toHaveBeenCalledTimes(3);
+  });
+
+  it("a page whose navigation was overtaken boots last is not registered and tears nothing down", async () => {
+    const first = bootOf(0);
+    client.dispatch({ type: "refresh" });
+    const second = bootOf(1);
+    client.dispatch({ type: "refresh" });
+    send({ type: "initialized", boot: second });
+    await flush();
+    send({ type: "initialized", boot: first });
+    await flush();
+    expect(onUnexpectedNavigation).not.toHaveBeenCalled();
+    expect(filesystem.connectRemote).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a boot carrying a nonce it never issued", async () => {
+    send({ type: "initialized", boot: "f".repeat(32) });
+    await flush();
+    expect(onUnexpectedNavigation).toHaveBeenCalledTimes(1);
+    expect(filesystem.connectRemote).not.toHaveBeenCalled();
+  });
+
+  it("refuses a replayed nonce once nothing is armed", async () => {
+    const first = bootOf(0);
+    send({ type: "initialized", boot: first });
+    await flush();
+    send({ type: "initialized", boot: first });
+    await flush();
+    expect(onUnexpectedNavigation).toHaveBeenCalledTimes(1);
+    expect(filesystem.connectRemote).toHaveBeenCalledTimes(1);
   });
 });
