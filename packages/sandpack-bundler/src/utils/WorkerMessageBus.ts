@@ -26,6 +26,10 @@ export interface PendingRequest {
   reject: (err: Error) => void;
 }
 
+// One id sequence for every bus of this realm: responses are matched by
+// channel and id alone, so two buses on one endpoint must never share an id.
+let lastMessageId = 0;
+
 const serializeError = (originalError: any): any => {
   if (typeof originalError !== 'object') {
     return { message: originalError };
@@ -57,7 +61,8 @@ export class WorkerMessageBus {
   private timeoutMs: number;
 
   private pendingRequests = new Map<number, PendingRequest>();
-  private _messageId = 0;
+  // Runs while requests are unanswered; each response restarts it.
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: WorkerMessageBusOpts) {
     this.channel = opts.channel;
@@ -102,6 +107,8 @@ export class WorkerMessageBus {
         if (!pendingRequest) {
           return;
         }
+        this.pendingRequests.delete(messageId);
+        this.watch();
 
         if (data.error !== undefined) {
           pendingRequest.reject(parseError(data.error));
@@ -115,8 +122,54 @@ export class WorkerMessageBus {
   }
 
   nextMessageId() {
-    this._messageId++;
-    return this._messageId;
+    lastMessageId++;
+    return lastMessageId;
+  }
+
+  /**
+   * The timeout measures the endpoint's silence, not a request's age: the
+   * other side answers one request at a time, so a request queued behind
+   * others is waiting, not stuck, for as long as responses keep arriving.
+   */
+  private watch(expired = false): void {
+    if (this.watchdog !== null) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
+    if (this.pendingRequests.size === 0) {
+      return;
+    }
+    this.watchdog = setTimeout(
+      () => {
+        this.watchdog = null;
+        if (expired) {
+          this.failPendingRequests(
+            new Error(`Request on channel ${this.channel} timed out: no response for ${this.timeoutMs} ms`)
+          );
+        } else {
+          // A timer can fire late (a long task, a resumed page) while responses
+          // already wait in this page's queue: let them be handled first.
+          this.watch(true);
+        }
+      },
+      expired ? 0 : this.timeoutMs
+    );
+  }
+
+  /**
+   * Nothing sent to the endpoint will be answered: it went silent with work in
+   * hand, or whoever owns it reported that it died.
+   */
+  failPendingRequests(error: Error): void {
+    if (this.watchdog !== null) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
+    const pendingRequests = [...this.pendingRequests.values()];
+    this.pendingRequests.clear();
+    for (const pendingRequest of pendingRequests) {
+      pendingRequest.reject(error);
+    }
   }
 
   request(method: string, ...params: any): Promise<any> {
@@ -128,23 +181,20 @@ export class WorkerMessageBus {
       params,
     };
     const promise = new Promise((resolve, reject) => {
-      const timeoutRef = setTimeout(() => {
-        this.pendingRequests.delete(messageId);
-        reject(new Error(`Request on channel ${this.channel} timed out`));
-      }, this.timeoutMs);
-
-      this.pendingRequests.set(messageId, {
-        resolve: (data) => {
-          clearTimeout(timeoutRef);
-          resolve(data);
-        },
-        reject: (err) => {
-          clearTimeout(timeoutRef);
-          reject(err);
-        },
-      });
+      this.pendingRequests.set(messageId, { resolve, reject });
     });
-    this.endpoint.postMessage(message);
+    // Only the first unanswered request starts the clock; later ones wait behind it.
+    if (this.pendingRequests.size === 1) {
+      this.watch();
+    }
+    try {
+      this.endpoint.postMessage(message);
+    } catch (err) {
+      // Never sent, so never answered: it must not hold the clock.
+      this.pendingRequests.delete(messageId);
+      this.watch();
+      throw err;
+    }
     return promise;
   }
 }

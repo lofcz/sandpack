@@ -1,4 +1,4 @@
-import initLightningcss, { bundleAsync } from 'lightningcss-wasm';
+import initLightningcss, { bundleAsync, type CSSModuleExports } from 'lightningcss-wasm';
 import { analyzeCss, type CssAnalysis } from '@lofcz/transpiler/css';
 // Parcel `url:` → fetchable asset URL (string). Do NOT import the .wasm as an
 // ES module: Sandpack's opaque-origin iframe + import maps then hit the host
@@ -63,6 +63,28 @@ async function resolveCSSFile(
   return ctx.module.bundler.resolveAsync(path, basePath, ['.css']);
 }
 
+/**
+ * A stylesheet whose class names are local to it, by the file name convention
+ * bundlers share (`x.module.css`): importing it gives the map from the names
+ * written in the file to the names they were given.
+ */
+export function isCssModule(filepath: string): boolean {
+  return filepath.endsWith('.module.css');
+}
+
+/** What `styles.name` is: the class it was renamed to, then the classes it composes. */
+function classNames(exported: CSSModuleExports): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const [name, { name: local, composes }] of Object.entries(exported)) {
+    const classes = [local];
+    // A class composed from another file is that file's export; only names of
+    // this bundle are known here.
+    for (const reference of composes) if (reference.type !== 'dependency') classes.push(reference.name);
+    names[name] = classes.join(' ');
+  }
+  return names;
+}
+
 function toCompilationError(err: unknown, fallbackPath: string): CompilationError {
   const shaped = shapeCssEngineError(err, fallbackPath);
   return new CompilationError(shaped, shaped.path ?? fallbackPath);
@@ -80,9 +102,11 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
   try {
     await ensureLightningcss();
 
+    const cssModules = isCssModule(entryPath);
     const result = await bundleAsync({
       filename: entryPath,
       minify: false,
+      cssModules,
       resolver: {
         read: async (filePath: string) => {
           if (filePath !== entryPath) dependencies.add(filePath);
@@ -119,7 +143,10 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
     const usesCompiler = [...analyses.values()].some(analysis => analysis.requiresTailwind);
     const hasFrameworkImport = [...analyses.values()].some(analysis => analysis.tailwindImports.length > 0);
     if (usesCompiler && !hasFrameworkImport) code = `@import "tailwindcss";\n${code}`;
-    return { code, dependencies };
+    const transpiled: { code: string; dependencies: Set<string>; exports?: Record<string, string> } = { code, dependencies };
+    // Module.transpile emits these as the module's exports.
+    if (cssModules) transpiled.exports = classNames(result.exports ?? {});
+    return transpiled;
   } catch (err) {
     return toCompilationError(err, entryPath);
   }

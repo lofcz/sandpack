@@ -7,6 +7,8 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  */
 
+import { toError } from './thrown-value';
+
 type ErrorCallback = (error: Error) => void;
 
 export function registerUnhandledRejection(target: EventTarget, callback: ErrorCallback) {
@@ -15,14 +17,8 @@ export function registerUnhandledRejection(target: EventTarget, callback: ErrorC
       return callback(new Error('Unknown'));
     }
 
-    const { reason } = err;
-    if (reason instanceof Error) {
-      return callback(reason);
-    }
-
-    // A non-error was rejected, we don't have a trace :(
-    // Look in your browser's devtools for more information
-    return callback(new Error(reason));
+    // A non-error has no trace; toError says what was rejected instead.
+    return callback(toError(err.reason));
   };
 
   target.addEventListener('unhandledrejection', rejectionHandler);

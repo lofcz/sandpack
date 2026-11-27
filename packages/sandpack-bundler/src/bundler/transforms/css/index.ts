@@ -23,7 +23,10 @@ export class CSSTransformer extends Transformer {
       const analysis = analyzeCss(ctx.code ?? '');
       // The loader owns parsing the complete CSS import graph, including compiler
       // directives in imported stylesheets. Pass the original source into it.
-      if (analysis.requiresResolution) return await (await this.getLoader()).default(ctx);
+      // A CSS module's class names are renamed by the engine.
+      if (analysis.requiresResolution || ctx.module.filepath.endsWith('.module.css')) {
+        return await (await this.getLoader()).default(ctx);
+      }
       const code = analysis.requiresTailwind && !analysis.tailwindImports.length
         ? `@import "tailwindcss";\n${analysis.css}`
         : analysis.css;

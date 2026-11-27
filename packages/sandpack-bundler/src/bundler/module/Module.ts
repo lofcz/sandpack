@@ -1,4 +1,5 @@
 import { BundlerError } from '../../errors/BundlerError';
+import { ModuleNotFoundError } from '../../errors/ModuleNotFound';
 import { Bundler } from '../bundler';
 import { Evaluation } from './Evaluation';
 import { HotContext } from './hot';
@@ -28,6 +29,10 @@ export class Module {
   dependencies: Set<string>;
   // Keeping this seperate from dependencies as there might be duplicates otherwise
   dependencyMap: Map<string, string>;
+  // Specifiers that did not resolve, with why. Package code may never run the
+  // `require()` that names one (a guarded or dead branch, a Node-only file), so
+  // it fails when that `require()` runs, not when the module is built.
+  dependencyErrors: Map<string, unknown> = new Map();
 
   constructor(filepath: string, source: string, isCompiled: boolean = false, bundler: Bundler) {
     this.id = filepath;
@@ -75,6 +80,7 @@ export class Module {
    */
   async transpile(): Promise<TranspileResult> {
     const dependencies: string[] = [];
+    let exported: Record<string, string> | undefined;
     try {
       const preset = this.bundler.preset;
       if (!preset) {
@@ -100,8 +106,16 @@ export class Module {
           return { code, dependencies, error: transformationResult };
         }
         code = transformationResult.code;
-        dependencies.push(...transformationResult.dependencies);
+        for (const dependency of transformationResult.dependencies) {
+          // The collector reports a `require()`/`import()` whose specifier is not
+          // a literal as a non-string: there is nothing to resolve at build time.
+          if (typeof dependency === 'string') dependencies.push(dependency);
+        }
+        exported = (transformationResult as { exports?: Record<string, string> }).exports ?? exported;
       }
+      // Names a transformer exports from the module (a CSS module's classes),
+      // whatever the transformers after it turned its code into.
+      if (exported) code += `\nmodule.exports = ${JSON.stringify(exported)};`;
       return { code, dependencies, error: null };
     } catch (err: any) {
       return { code: null, dependencies, error: err };
@@ -110,8 +124,22 @@ export class Module {
 
   /** Complete compilation from a transpile result: register its dependencies. */
   async adopt(result: TranspileResult): Promise<void> {
+    // The app's own imports must resolve for the build to succeed. A package's
+    // file is built whether or not its `require()`s are ever reached, so one
+    // that names a module that cannot be found fails when it runs.
+    const lazy = this.filepath.startsWith('/node_modules/');
     try {
-      await Promise.all(result.dependencies.map((d) => this.addDependency(d)));
+      await Promise.all(
+        result.dependencies.map(async (specifier) => {
+          try {
+            await this.addDependency(specifier);
+            this.dependencyErrors.delete(specifier);
+          } catch (err) {
+            if (!lazy || !(err instanceof ModuleNotFoundError)) throw err;
+            this.dependencyErrors.set(specifier, err);
+          }
+        })
+      );
     } catch (err: any) {
       this.compilationError = err;
       return;

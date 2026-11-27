@@ -1,5 +1,7 @@
 // Based on https://github.com/facebook/create-react-app/tree/main/packages/react-error-overlay
 
+import { toError } from './thrown-value';
+
 type ErrorCallback = (error: Error) => void;
 
 function errorHandler(callback: ErrorCallback, evt: Event & { error?: any }): void {
@@ -7,14 +9,8 @@ function errorHandler(callback: ErrorCallback, evt: Event & { error?: any }): vo
     return;
   }
 
-  const error = evt.error;
-  if (error instanceof Error) {
-    callback(error);
-  } else {
-    // A non-error was thrown, we don't have a trace. :(
-    // Look in your browser's devtools for more information
-    callback(new Error(error));
-  }
+  // A non-error has no trace; toError says what was thrown instead.
+  callback(toError(evt.error));
 }
 
 export function registerUnhandledError(target: EventTarget, callback: ErrorCallback) {

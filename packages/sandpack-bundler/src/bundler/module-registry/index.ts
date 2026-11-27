@@ -4,7 +4,8 @@ import * as logger from '../../utils/logger';
 import { sortObj } from '../../utils/object';
 import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
-import { scanCjsModule } from '../transforms/raw-cjs/scan';
+import { CjsScan, scanCjsModule } from '../transforms/raw-cjs/scan';
+import { BuiltinPackage, NodeBuiltin, nodeBuiltin } from '../nodeBuiltins';
 import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
 import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule, fetchModuleEntries, mergeModuleParts } from './module-cdn';
 import {
@@ -38,9 +39,40 @@ import { NodeModule } from './NodeModule';
  */
 function trustCdnPrecompiled(file: ICDNModuleFile): boolean {
   if (file.t === false) return false;
-  if (scanCjsModule(file.c).isEsm) return false;
+  if (scanOf(file).isEsm) return false;
   return true;
 }
+
+// One parse per CDN file, however many times it is asked about.
+const scans = new WeakMap<ICDNModuleFile, CjsScan>();
+function scanOf(file: ICDNModuleFile): CjsScan {
+  let scan = scans.get(file);
+  if (!scan) scans.set(file, (scan = scanCjsModule(file.c)));
+  return scan;
+}
+
+/**
+ * The specifiers a precompiled file is linked for: the CDN's list, and what
+ * the file requires that the list leaves out. The list holds only relative
+ * paths and npm package names: not `node:fs`, not a package's own `#import`.
+ */
+function linkedSpecifiers(file: ICDNModuleFile): string[] {
+  if (file.t === false) return file.d;
+  let unlisted: string[] | undefined;
+  for (const required of scanOf(file).requires) {
+    if (!file.d.includes(required)) (unlisted ??= []).push(required);
+  }
+  return unlisted ? [...file.d, ...unlisted] : file.d;
+}
+
+// The fields of a package.json that name what npm installs with the package.
+interface PackageManifest {
+  dependencies?: DepMap;
+  optionalDependencies?: DepMap;
+  peerDependencies?: DepMap;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+}
+const manifests = new WeakMap<NodeModule, PackageManifest>();
 
 // dependency => version range
 export type DepMap = { [depName: string]: string };
@@ -95,6 +127,14 @@ export class ModuleRegistry {
   // Batches queued or running; while any is, a package may be visible before
   // its dependency closure is (`whenIdle`).
   private pendingBatches = 0;
+
+  // Ranges of packages installed although the app does not declare them: the
+  // browser implementation of a Node built-in, or what a file of an installed
+  // package imports (`ensureEntries` with a range).
+  private implicitRanges: Map<string, string> = new Map();
+  // Precompiled modules with a dependency that did not link; linking is tried
+  // again once more packages are installed.
+  private unlinked: Set<Module> = new Set();
 
   // Bundled-package index (R3-49a): `name@version` → in-zip filename. `undefined`
   // = not yet loaded; `null` = no bundle present / malformed (resolve live).
@@ -226,6 +266,50 @@ export class ModuleRegistry {
   }
 
   /**
+   * What a Node built-in loads here, or null when `specifier` does not name
+   * one, or names a package the app declares (the app's choice wins).
+   */
+  builtin(specifier: string, declared: DepMap = this.declared): NodeBuiltin | null {
+    const found = nodeBuiltin(specifier);
+    if (!found) return null;
+    const name = packageName(specifier);
+    return name !== null && hasOwn(declared, name) ? null : found;
+  }
+
+  /** The npm package that implements the built-in `specifier` names, if one does. */
+  builtinPackage(specifier: string, declared: DepMap = this.declared): BuiltinPackage | null {
+    return this.builtin(specifier, declared)?.package ?? null;
+  }
+
+  /**
+   * The range the installed package `owner` declares for `name`: what npm
+   * installs with it (dependencies, optional dependencies, peers that are not
+   * optional).
+   */
+  rangeDeclaredBy(owner: string | null, name: string): string | undefined {
+    const nodeModule = owner === null ? undefined : this.modules.get(owner);
+    if (!nodeModule) return undefined;
+    let manifest = manifests.get(nodeModule);
+    if (!manifest) {
+      const file = nodeModule.files['package.json'];
+      try {
+        manifest = typeof file === 'object' ? (JSON.parse(file.c) as PackageManifest) ?? {} : {};
+      } catch {
+        manifest = {};
+      }
+      manifests.set(nodeModule, manifest);
+    }
+    for (const field of [manifest.dependencies, manifest.optionalDependencies]) {
+      if (field && typeof field === 'object' && hasOwn(field, name) && typeof field[name] === 'string') return field[name];
+    }
+    const peers = manifest.peerDependencies;
+    if (peers && typeof peers === 'object' && hasOwn(peers, name) && typeof peers[name] === 'string') {
+      if (!manifest.peerDependenciesMeta?.[name]?.optional) return peers[name];
+    }
+    return undefined;
+  }
+
+  /**
    * Adopt an edited declared map without reinstalling: packages already
    * installed keep their versions (the bundler reloads when one of theirs
    * changes), new ones install when first imported.
@@ -245,11 +329,15 @@ export class ModuleRegistry {
    * one with entries it does not have yet (a deep import added later, or a
    * file the CDN did not inline). Requests made within
    * `INSTALL_BATCH_WINDOW_MS` share one /dep_tree request; an undeclared
-   * package that is not installed is ignored.
+   * package that is not installed is ignored unless `range` says which
+   * version to install.
    */
-  ensureEntries(name: string, entries: Iterable<string>): Promise<void> {
+  ensureEntries(name: string, entries: Iterable<string>, range?: string): Promise<void> {
     const installed = this.modules.get(name);
-    if (!installed && !this.isDeclared(name)) return Promise.resolve();
+    if (!installed && !this.isDeclared(name)) {
+      if (range === undefined) return Promise.resolve();
+      if (!this.implicitRanges.has(name)) this.implicitRanges.set(name, range);
+    }
     const waits: Promise<void>[] = [];
     for (const entry of entries) {
       if (installed?.entries.has(entry)) continue;
@@ -313,7 +401,11 @@ export class ModuleRegistry {
       const installed = this.modules.get(name);
       const missing = [...wanted].filter((entry) => !installed?.entries.has(entry));
       if (missing.length === 0) continue;
-      request[name] = installed ? this.pinOf(name, installed) ?? installed.version : this.declared[name];
+      const range = installed
+        ? this.pinOf(name, installed) ?? installed.version
+        : this.declared[name] ?? this.implicitRanges.get(name);
+      if (range === undefined) continue;
+      request[name] = range;
       entries[name] = missing;
     }
     if (Object.keys(request).length === 0) return;
@@ -425,16 +517,37 @@ export class ModuleRegistry {
       const missing: DepMap = {};
       const wanted: Imports = new Map();
       for (const nodeModule of this.modules.values()) {
-        for (const file of Object.values(nodeModule.files)) {
+        for (const [fileName, file] of Object.entries(nodeModule.files)) {
           if (typeof file !== 'object') continue;
-          for (const dep of file.d) {
-            const name = packageName(dep);
-            const entry = packageEntry(dep);
-            if (name && entry && name !== nodeModule.name) addImport(wanted, name, entry);
+          for (const dep of linkedSpecifiers(file)) {
+            const builtin = this.builtin(dep);
+            // A built-in the bundler provides needs no package.
+            if (builtin && !builtin.package) continue;
+            const target = builtin?.package.specifier ?? dep;
+            const name = packageName(target);
+            const entry = packageEntry(target);
+            if (!name || !entry || name === nodeModule.name) continue;
+            if (!builtin) {
+              addImport(wanted, name, entry);
+              continue;
+            }
+            // The browser implementation of a built-in, at its pinned version:
+            // unless it is installed, or the file's own package maps the
+            // built-in to something else (its `browser` field).
+            if (this.modules.has(name) || missing[name] || attempted.has(name)) continue;
+            const resolves = await this.bundler
+              .resolveInstalled(dep, `/node_modules/${nodeModule.name}/${fileName}`)
+              .then(() => true, () => false);
+            if (resolves) continue;
+            addImport(wanted, name, entry);
+            missing[name] = this.declared[name] ?? builtin.package.range;
           }
         }
         for (const used of nodeModule.modules) {
           if (!used || used.startsWith('.') || used.startsWith('/')) continue;
+          // Not the npm package that happens to carry a built-in's name: the
+          // loop above asked for the implementation where a file requires it.
+          if (this.builtin(used)) continue;
           if (this.modules.has(used) || missing[used] || attempted.has(used)) continue;
           missing[used] = 'latest';
         }
@@ -622,40 +735,45 @@ export class ModuleRegistry {
     }
     const module = new Module(path, file.c, precompiled, this.bundler);
     this.bundler.modules.set(path, module);
-    return file.d.map((dep) => {
-      return async () => {
-        // Pre-linking is an optimization over the CDN's dependency lists, which
-        // cover EVERY code file of a package, including ones nothing imports: a
-        // CLI script (katex@0.19.1 `cli.js` → commander → `child_process`) or a
-        // test. Such a file must not fail the build here; if app code really
-        // imports it, the normal resolution path reports the genuine error.
-        try {
-          // Plain resolution: pre-linking runs inside an install batch, which an
-          // install or expansion triggered from here would wait on.
-          await module.addDependency(dep, (specifier, from) => this.bundler.resolveInstalled(specifier, from));
-        } catch (err) {
-          logger.warn(
-            `CDN pre-link skipped: "${dep}" from ${path} could not be resolved (${
-              err instanceof Error ? err.message : String(err)
-            })`,
-          );
-          return;
-        }
-        // Transform ONLY the dependency just added (its resolved path), not the whole
-        // (growing) dependency set on every add — the latter is ~O(deps²) per module
-        // (177k calls vs 3k for a real closure, measured). Each dep is still transformed
-        // exactly once across the callbacks; transformModule is idempotent (precompiled
-        // modules short-circuit on `compiled != null`).
-        const resolved = module.dependencyMap.get(dep);
-        if (resolved) {
-          this.bundler.transformModule(resolved).catch((err) => {
-            logger.warn(
-              `CDN pre-transform skipped: ${resolved} (${err instanceof Error ? err.message : String(err)})`,
-            );
-          });
-        }
-      };
-    });
+    return linkedSpecifiers(file).map((dep) => () => this.link(module, dep));
+  }
+
+  /** Link one dependency of a precompiled module, and start transforming it. */
+  private async link(module: Module, dep: string): Promise<void> {
+    // Pre-linking is an optimization over the CDN's dependency lists, which
+    // cover EVERY code file of a package, including ones nothing imports: a
+    // CLI script (katex@0.19.1 `cli.js` → commander → `child_process`) or a
+    // test. Such a file must not fail the build here: the module keeps why the
+    // dependency did not link, and `require()` throws that if the code ever
+    // asks for it.
+    try {
+      // Plain resolution: pre-linking runs inside an install batch, which an
+      // install or expansion triggered from here would wait on.
+      await module.addDependency(dep, (specifier, from) => this.bundler.resolveInstalled(specifier, from));
+    } catch (err) {
+      module.dependencyErrors.set(dep, err);
+      this.unlinked.add(module);
+      logger.warn(
+        `CDN pre-link skipped: "${dep}" from ${module.filepath} could not be resolved (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      );
+      return;
+    }
+    if (module.dependencyErrors.delete(dep) && module.dependencyErrors.size === 0) this.unlinked.delete(module);
+    // Transform ONLY the dependency just added (its resolved path), not the whole
+    // (growing) dependency set on every add — the latter is ~O(deps²) per module
+    // (177k calls vs 3k for a real closure, measured). Each dep is still transformed
+    // exactly once across the callbacks; transformModule is idempotent (precompiled
+    // modules short-circuit on `compiled != null`).
+    const resolved = module.dependencyMap.get(dep);
+    if (resolved) {
+      this.bundler.transformModule(resolved).catch((err) => {
+        logger.warn(
+          `CDN pre-transform skipped: ${resolved} (${err instanceof Error ? err.message : String(err)})`,
+        );
+      });
+    }
   }
 
   async loadModuleDependencies() {
@@ -664,6 +782,14 @@ export class ModuleRegistry {
     // again later, so a skipped dependency would remain missing at evaluation.
     this.bundler.forgetMissingNodeModules();
     const depPromises = [];
+    // What an earlier batch could not link may resolve now that more is installed.
+    for (const module of this.unlinked) {
+      if (this.bundler.modules.get(module.filepath) !== module) {
+        this.unlinked.delete(module);
+        continue;
+      }
+      for (const dep of module.dependencyErrors.keys()) depPromises.push(() => this.link(module, dep));
+    }
     for (let [moduleName, nodeModule] of this.modules) {
       for (let [fileName, file] of Object.entries(nodeModule.files)) {
         if (typeof file === 'object') {

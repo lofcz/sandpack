@@ -3,6 +3,20 @@ import evaluate, { getExtendedSwcHelpers } from './eval';
 import { HotContext } from './hot';
 import { Module } from './Module';
 import { IMPORT_META_GLOBAL } from '@lofcz/transpiler/runtime';
+import { moduleSourceURL } from '../../error-listener/source-url';
+import { npmFileUrl } from '../../FileSystem/npmFileUrl';
+import { parseNodeModulePath } from '../module-registry/cdnLayoutResolve';
+
+// What Vite defines for a dev build; code written for it reads these unguarded.
+const IMPORT_META_ENV = Object.freeze({ MODE: 'development', DEV: true, PROD: false, SSR: false, BASE_URL: '/' });
+
+/** Node's shape for a module that is not there: `code` is what guarded requires test. */
+function moduleNotFound(message: string, cause?: unknown): Error {
+  const error = new Error(message) as Error & { code: string; cause?: unknown };
+  error.code = 'MODULE_NOT_FOUND';
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
 
 class EvaluationContext {
 
@@ -53,10 +67,49 @@ export class Evaluation {
 
   run(): void {
     const module = this.module;
-    const code = module.compiled + `\n//# sourceURL=${location.origin}${module.filepath}`;
-    this.context.exports = evaluate(code, this.require.bind(this), this.context, {}, {
-      [IMPORT_META_GLOBAL]: Object.freeze({ url: new URL(module.filepath, location.href).href }),
+    const code = module.compiled + `\n//# sourceURL=${moduleSourceURL(module.filepath)}`;
+    const require = Object.assign(this.require.bind(this), {
+      resolve: this.resolve.bind(this),
+      // Nothing is cached under a key code can name: an entry it deletes was never there.
+      cache: {},
     });
+    this.context.exports = evaluate(code, require, this.context, {}, {
+      [IMPORT_META_GLOBAL]: Object.freeze({ url: this.url(), env: IMPORT_META_ENV, hot: this.context.hot }),
+    });
+  }
+
+  /**
+   * `import.meta.url`. A package file has a real address, the npm release it
+   * came from, so `new URL('./x.wasm', import.meta.url)` can be fetched; an app
+   * file exists only in the workspace and keeps its path on the page's URL.
+   */
+  private url(): string {
+    const filepath = this.module.filepath;
+    const inPackage = parseNodeModulePath(filepath);
+    const release = inPackage ? this.module.bundler.moduleRegistry.modules.get(inPackage.pkg)?.release : undefined;
+    if (inPackage && release) return npmFileUrl(release.name, release.version, inPackage.rel);
+    return new URL(filepath, location.href).href;
+  }
+
+  /** `require.resolve`: the id `require` would load, without loading it. */
+  resolve(specifier: string): string {
+    const moduleFilePath = this.module.dependencyMap.get(specifier);
+    if (!moduleFilePath) throw this.notLinked(specifier);
+    return moduleFilePath;
+  }
+
+  /** Why `specifier` has no module to load: the error `require()` throws for it. */
+  private notLinked(specifier: unknown): Error {
+    const from = this.module.filepath;
+    if (typeof specifier === 'string' && this.module.dependencyErrors.has(specifier)) {
+      const cause = this.module.dependencyErrors.get(specifier);
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      return moduleNotFound(`Cannot load "${specifier}" required by "${from}": ${reason}`, cause);
+    }
+    return moduleNotFound(
+      `Cannot load ${typeof specifier === 'string' ? `"${specifier}"` : `a module named by ${typeof specifier}`} required by "${from}": ` +
+        'it was not resolved when the module was built. Only specifiers written as string literals are; one computed when the code runs is not part of the build.'
+    );
   }
 
   require(specifier: string): any {
@@ -69,24 +122,29 @@ export class Evaluation {
 
     const moduleFilePath = this.module.dependencyMap.get(specifier);
     if (!moduleFilePath) {
+      // A built-in the bundler provides needs no build step: a specifier that
+      // was not collected (a computed one, or a `node:` one the CDN's
+      // dependency list left out) still loads.
+      const provided = typeof specifier === 'string' ? this.module.bundler.moduleRegistry.builtin(specifier)?.path : undefined;
+      const builtin = provided === undefined ? undefined : this.module.bundler.providedModule(provided);
+      if (builtin) return builtin.evaluate().context.exports;
+
       logger.debug('Require', {
         dependencies: this.module.dependencyMap,
         specifier,
       });
 
-      throw new Error(`Dependency "${specifier}" not collected from "${this.module.filepath}"`);
+      throw this.notLinked(specifier);
     }
     const module = this.module.bundler.getModule(moduleFilePath);
     if (!module) {
-      // Backstop: reaching require() with a module absent from the map means its
-      // source never entered the transpile pipeline — almost always a FAILED SOURCE
-      // FETCH (network error, or a GitHub REST rate limit returning 403). The old
-      // wording ("has not been transpiled") sent debugging down a transpile/mount
-      // rabbit hole; the load path now fails fast, but keep this honest as a backstop.
+      // Backstop: the load path fails fast, so a module absent from the map here
+      // was dropped from the build after it compiled (its file was deleted, or
+      // reading it failed). Say which read failed when one did.
+      const failure = this.module.bundler.loadFailure(moduleFilePath);
       throw new Error(
-        `Module "${moduleFilePath}" is unavailable — its source was not loaded ` +
-          `(commonly a failed fetch: a network error or a GitHub API rate limit), so it ` +
-          `was never transpiled. Required by "${this.module.filepath}".`
+        `Module "${moduleFilePath}" (required by "${this.module.filepath}") is not part of the build` +
+          (failure ? `: ${failure.message}` : ': its source was never loaded.')
       );
     }
     return module.evaluate().context.exports;

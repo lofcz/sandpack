@@ -29,7 +29,8 @@ it('runs upstream import.meta and non-optional root peers through the real trans
     evaluate!();
     expect((globalThis as any).__upstreamResult).toEqual({
       value: 42, url: 'http://localhost/app/src/main.ts', frozen: true,
-      sibling: 'http://localhost/app/src/add.wasm', env: undefined,
+      sibling: 'http://localhost/app/src/add.wasm',
+      env: { MODE: 'development', DEV: true, PROD: false, SSR: false, BASE_URL: '/' },
     });
     expect(h.bundler.moduleRegistry.isDeclared('optional')).toBe(false);
   } finally {

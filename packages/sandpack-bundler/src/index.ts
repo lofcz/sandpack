@@ -7,8 +7,8 @@ import { Port } from '@zenfs/core/backends/port.js';
 import { Bundler } from './bundler/bundler';
 import { setCdnRoot } from './bundler/module-registry/module-cdn';
 import { ErrorRecord, listenToRuntimeErrors } from './error-listener';
+import { describeThrown } from './error-listener/thrown-value';
 import { BundlerError } from './errors/BundlerError';
-import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
 import { showErrorOverlay, clearErrorOverlay } from './errors/overlay';
 import { handleEvaluate, hookConsole } from './integrations/console';
@@ -40,8 +40,9 @@ import { APP_ROOT, underAppRoot } from './fsLayout';
 import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
-import { getDocumentHeight } from './utils/document';
-import { registerParentImmutableFetch, ParentImmutableFetchResult } from './utils/fetch';
+import { DocumentMutationWatcher, getDocumentHeight } from './utils/document';
+import { onSlowRequests, registerParentImmutableFetch, ParentImmutableFetchResult } from './utils/fetch';
+import { failBabelRequests } from './bundler/transforms/babel';
 import * as logger from './utils/logger';
 import { readBootNonce } from './protocol/bootNonce';
 
@@ -83,6 +84,7 @@ class SandpackInstance {
   private template!: string;
   private lastHeight: number = 0;
   private resizePollingTimer: NodeJS.Timer | undefined;
+  private mutationWatcher = new DocumentMutationWatcher(() => this.sendResizeEvent(), 300);
   private readyPromise: Promise<void>;
 
   constructor() {
@@ -116,10 +118,47 @@ class SandpackInstance {
         this.messageBus.protocolRequest('immutable-fetch', 'fetch', [url, integrity]) as Promise<ParentImmutableFetchResult>,
     );
 
+    // A download that takes long is progress, not silence: name what is being
+    // waited on so the host shows it and does not take the build for stalled.
+    // The fetch layer bounds every request, so this cannot go on forever.
+    const stopSlowRequestReports = onSlowRequests((waiting) => {
+      this.messageBus.sendMessage('build-progress', {
+        phase: 'dependencies',
+        item: waiting[0].subject ?? waiting[0].url,
+      });
+    });
+    this.disposableStore.add({ dispose: stopSlowRequestReports });
+
     this.readyPromise = this.bootstrap().catch((err) => {
-      logger.error('Failed to bootstrap sandpack instance', err);
+      // The host is waiting for a build: one that cannot start has failed.
+      this.messageBus.sendMessage('start', { firstLoad: true });
+      this.reportBuildFailure(err, 'Preview failed to start');
+      this.messageBus.sendMessage('status', { status: 'done' });
       throw err;
     });
+    // Reported above; whoever waits on readiness handles the rejection again.
+    this.readyPromise.catch(() => undefined);
+  }
+
+  /**
+   * End a build for the host the way a compile error does: the error to show,
+   * then `done`. Anything that stops a build goes through here, so the host
+   * never waits out its stall timer for an error that already happened.
+   */
+  private reportBuildFailure(error: unknown, fallbackTitle: string): void {
+    logger.error(error);
+    const details = (typeof error === 'object' && error !== null ? error : {}) as Partial<BundlerError>;
+    const failure = {
+      title: details.title || fallbackTitle,
+      message: describeThrown(error),
+      path: details.path,
+      line: details.line,
+      column: details.column,
+      stack: typeof details.stack === 'string' ? details.stack : undefined,
+    };
+    showErrorOverlay(failure);
+    this.messageBus.sendMessage('action', errorMessage(failure as BundlerError));
+    this.messageBus.sendMessage('done', { compilatonError: true });
   }
 
   private async bootstrap() {
@@ -257,7 +296,12 @@ class SandpackInstance {
     });
 
     listenToRuntimeErrors(this.bundler, (runtimeError: ErrorRecord) => {
-      const stackFrame = runtimeError.stackFrames[0] ?? {};
+      // Where the error is in the material's own code: frames of packages and
+      // of the bundler itself map to no source position.
+      const stackFrame =
+        runtimeError.stackFrames.find((frame) => frame._originalLineNumber != null) ??
+        runtimeError.stackFrames[0] ??
+        {};
 
       this.messageBus.sendMessage('action', {
         action: 'show-error',
@@ -265,8 +309,7 @@ class SandpackInstance {
         title: 'Runtime Exception',
         line: stackFrame._originalLineNumber,
         column: stackFrame._originalColumnNumber,
-        // @ts-ignore
-        path: runtimeError.error.path,
+        path: (runtimeError.error as { path?: string }).path ?? stackFrame._originalFileName ?? undefined,
         message: runtimeError.error.message,
         payload: { frames: runtimeError.stackFrames, stack: runtimeError.error.stack },
       });
@@ -342,6 +385,9 @@ class SandpackInstance {
       case 'request-handshake':
         this.announceHandshake();
         break;
+      case 'babel-worker-error':
+        failBabelRequests(String(message.message ?? message.url ?? 'unknown reason'));
+        break;
       case 'fs-change':
         // The parent observed writes to the shared filesystem and relayed the
         // changed paths (zenfs's Port backend can't forward watch events, so we
@@ -356,7 +402,12 @@ class SandpackInstance {
             this.bundler.markFilesChanged(paths);
             this.compileDebouncer.debounce(() => this.runCompile());
           })
-          .catch(logger.error);
+          .catch((err) => {
+            // The host waits for a build after every change: say that there is none.
+            this.messageBus.sendMessage('start', { firstLoad: true });
+            this.reportBuildFailure(err, 'Preview failed to start');
+            this.messageBus.sendMessage('status', { status: 'done' });
+          });
         break;
       case MOUNT_ADD_MESSAGE:
         this.readyPromise.then(() => this.handleMountAdd(message)).catch(logger.error);
@@ -516,20 +567,21 @@ class SandpackInstance {
      * Ideally we should only use a `MutationObserver` to trigger a resize event,
      * however, we noted that it's not 100% reliable, so we went for polling strategy as well
      */
-    let throttle: NodeJS.Timeout | undefined;
-    const observer = new MutationObserver(() => {
-      if (throttle === undefined) {
-        this.sendResizeEvent();
-
-        throttle = setTimeout(() => {
-          throttle = undefined;
-        }, 300);
-      }
-    });
-    observer.observe(document, { attributes: true, childList: true, subtree: true });
+    this.mutationWatcher.start();
   }
 
   private async runCompile() {
+    try {
+      await this.build();
+    } catch (error: unknown) {
+      // Preset setup, the HTML entry, anything else outside compile and
+      // evaluation: the build is over and the host must hear it.
+      this.reportBuildFailure(error, 'Build failed');
+      this.messageBus.sendMessage('status', { status: 'done' });
+    }
+  }
+
+  private async build() {
     logger.debug(logger.logFactory('Init'));
 
     // -- FileSystem
@@ -547,17 +599,17 @@ class SandpackInstance {
 
     this.messageBus.sendMessage('status', { status: 'initializing' });
 
-    if (this.bundler.isFirstLoad) {
-      this.bundler.resetModules();
-    }
     logger.debug(logger.logFactory('FileSystem', `finished in ${Date.now() - initStartTimeFileSystem}ms`));
 
     // --- Load preset
     logger.groupCollapsed(logger.logFactory('Preset and transformers'));
     const initStartTime = Date.now();
-    await this.bundler.initPreset(this.template);
-    logger.debug(logger.logFactory('Preset and transformers', `finished in ${Date.now() - initStartTime}ms`));
-    logger.groupEnd();
+    try {
+      await this.bundler.initPreset(this.template);
+      logger.debug(logger.logFactory('Preset and transformers', `finished in ${Date.now() - initStartTime}ms`));
+    } finally {
+      logger.groupEnd();
+    }
 
     // --- Bundling / Compiling
     // Terminal ok is ONLY after evaluate succeeds (`success` + `done` with
@@ -572,18 +624,7 @@ class SandpackInstance {
       evaluate = await this.bundler.compile();
     } catch (error: unknown) {
       compileFailed = true;
-      logger.error(error);
-      const cerr = error as CompilationError;
-      showErrorOverlay({
-        title: cerr.title || 'Build failed',
-        message: cerr.message || String(error),
-        path: cerr.path,
-        line: cerr.line,
-        column: cerr.column,
-        stack: (error as Error)?.stack,
-      });
-      this.messageBus.sendMessage('action', errorMessage(cerr));
-      this.messageBus.sendMessage('done', { compilatonError: true });
+      this.reportBuildFailure(error, 'Build failed');
     } finally {
       logger.debug(logger.logFactory('Bundling', `finished in  ${Date.now() - bundlingStartTime}ms`));
       logger.groupEnd();
@@ -622,21 +663,7 @@ class SandpackInstance {
         logger.debug(logger.logFactory('Evaluation', `finished in ${Date.now() - evalStartTime}ms`));
         logger.groupEnd();
       } catch (error: unknown) {
-        logger.error(error);
-        const berr = error as BundlerError;
-        showErrorOverlay({
-          title: berr.title || 'Evaluation error',
-          message: berr.message || String(error),
-          path: berr.path,
-          line: berr.line,
-          column: berr.column,
-          stack: (error as Error)?.stack,
-        });
-        this.messageBus.sendMessage(
-          'action',
-          errorMessage(berr) // TODO: create a evaluation error
-        );
-        this.messageBus.sendMessage('done', { compilatonError: true });
+        this.reportBuildFailure(error, 'Evaluation error');
       }
 
       this.initResizeEvent();
@@ -647,6 +674,7 @@ class SandpackInstance {
   }
 
   dispose() {
+    this.mutationWatcher.stop();
     this.disposableStore.dispose();
   }
 }

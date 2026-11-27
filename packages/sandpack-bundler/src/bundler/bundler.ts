@@ -12,6 +12,7 @@ import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../
 import { computeRequestDepMap, importedPackages, isTransformable, packageEntry, packageName, rootRuntimeDependencies } from '@lofcz/transpiler/runtime';
 import { cssModuleSpecifiers } from '@lofcz/transpiler/css';
 import { ModuleNotFoundError } from '../errors/ModuleNotFound';
+import { FetchError } from '../errors/FetchError';
 import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus, BuildProgressUpdate } from '../protocol/message-types';
@@ -27,10 +28,14 @@ import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { DepMap, ModuleRegistry } from './module-registry';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
+import { NodeBuiltin, providedModuleCode } from './nodeBuiltins';
+import { EMPTY_SHIM } from '../resolver/utils/constants';
 import { LocksetSection, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { scanLocalImports } from './importScan';
 import { Module, TranspileResult } from './module/Module';
+import { HotContext } from './module/hot';
+import { describeThrown } from '../error-listener/thrown-value';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
@@ -89,25 +94,6 @@ export const DEFAULT_CODE = `
 Object.defineProperty(exports, "__esModule", {
   value: true
 });
-`.trim()
-
-/**
- * Source for the sandbox's `fs` module. It re-exports the shared filesystem the
- * bundler exposes on the global. That fs is rooted at `/` (so app code can reach
- * the whole tree, including dynamic mounts like `/firestore`) with the working
- * directory at `APP_ROOT`, so relative paths resolve against the repo. The repo
- * is backed by the parent window over the ZenFS Port, so app-code writes there
- * land in the parent filesystem and are reflected back into the editor. Async
- * APIs (\`fs.promises.*\`, callback style) are supported; synchronous APIs are
- * not, since the Port bridge cannot service synchronous calls.
- */
-export const SHARED_FS_MODULE_CODE = `
-"use strict";
-var __fs = (typeof globalThis !== "undefined" && globalThis.__sandpackSharedFs) || null;
-if (!__fs) {
-  throw new Error("[sandpack] shared filesystem is unavailable");
-}
-module.exports = __fs;
 `.trim()
 
 interface IBundlerOpts {
@@ -202,8 +188,24 @@ export class Bundler {
   // recursing into a stack overflow.
   evaluationStack: string[] = [];
   hasHMR = false;
+  // True until the first evaluation has succeeded.
   isFirstLoad = true;
   preset: Preset | undefined;
+  private presetName: string | undefined;
+  private presetImplicit: DepMap | undefined;
+
+  // The package.json the installed and linked node_modules were resolved for;
+  // null until that install is complete. A build that fails after it (a compile
+  // error, a throwing first evaluation) is retried against the same install.
+  private linkedPackageJSON: string | null = null;
+  private packageJSONSource: string | null = null;
+  private compileAttempted = false;
+
+  // Modules this compile has tried to load: the read error when that failed,
+  // else null. One that failed in an earlier compile gets a fresh attempt.
+  private loadAttempts = new Map<string, BundlerError | null>();
+  // Modules that went through their transform at least once.
+  private transformedBefore = new WeakSet<Module>();
 
   // Map from module id => parent module ids
   initiators = new Map<string, Set<string>>();
@@ -338,6 +340,12 @@ export class Bundler {
       readable: new RegistryFS(this.moduleRegistry, this.registryFetcher),
       writable: { backend: InMemory, label: 'node_modules-writable' },
     });
+    // A read must not count as a write. Updating the access time makes ZenFS
+    // copy every file it reads into the writable layer, and two first reads
+    // below one directory (the packages of one scope) race to create it there:
+    // the loser fails with EEXIST, the resolver takes that package.json for
+    // absent, and the import ends as 'Dependency "x" not collected'.
+    nodeModulesFs.attributes.set('no_atime');
     await this.materializeMountPoint('/node_modules');
     mount('/node_modules', nodeModulesFs);
 
@@ -348,7 +356,7 @@ export class Bundler {
     // The resolver's empty-module shim (EMPTY_SHIM = '/empty.js', resolver/utils)
     // needs a real file to read. It lives on the root tmpfs (not a mount), written
     // once the mount table exists. Replaces the former `//empty.js` MemoryFSLayer write.
-    await this.fs.writeFile('/empty.js', 'module.exports = () => {};');
+    await this.fs.writeFile(EMPTY_SHIM, providedModuleCode(EMPTY_SHIM) as string);
   }
 
   /**
@@ -368,15 +376,27 @@ export class Bundler {
   /** Reset all compilation data */
   resetModules(): void {
     this.preset = undefined;
+    this.presetImplicit = undefined;
     this.modules = new Map();
+    // The preset registers its runtimes again when it is initialized.
+    this.runtimes = [];
+    this.linkedPackageJSON = null;
     this.resolverCache = new Map();
     this.resolutionCache = new Map();
   }
 
   async initPreset(preset: string): Promise<void> {
+    this.presetName = preset;
     if (!this.preset) {
       this.preset = getPreset(preset);
-      await this.preset.init(this);
+      try {
+        await this.preset.init(this);
+      } catch (err) {
+        // Half a preset has no transformers: the next compile sets it up again.
+        this.preset = undefined;
+        this.runtimes = [];
+        throw err;
+      }
     }
   }
 
@@ -408,6 +428,7 @@ export class Bundler {
 
   async processPackageJSON(): Promise<void> {
     const foundPackageJSON = await this.fs.readFileAsync(underAppRoot('/package.json'));
+    this.packageJSONSource = foundPackageJSON;
     try {
       this.parsedPackageJSON = JSON.parse(foundPackageJSON);
     } catch (err) {
@@ -523,8 +544,13 @@ export class Bundler {
     const request = computeRequestDepMap(declared, importedPackages(specifiers), []);
     const entries: Record<string, string[]> = {};
     for (const specifier of specifiers) {
-      const name = packageName(specifier);
-      const entry = packageEntry(specifier);
+      // A Node built-in the app imports installs its browser implementation
+      // with everything else, in the same request.
+      const builtin = typeof specifier === 'string' ? this.moduleRegistry.builtinPackage(specifier, declared) : null;
+      const target = builtin?.specifier ?? specifier;
+      const name = packageName(target);
+      const entry = packageEntry(target);
+      if (builtin && !hasOwnKey(request, builtin.name)) request[builtin.name] = declared[builtin.name] ?? builtin.range;
       if (!name || !entry || !hasOwnKey(request, name)) continue;
       (entries[name] ??= []).includes(entry) || entries[name].push(entry);
     }
@@ -599,36 +625,91 @@ export class Bundler {
    * else — new dependencies, removed unused ones — is adopted in place.
    */
   private installedDependencyChanged(declared: DepMap): boolean {
-    for (const name of this.moduleRegistry.modules.keys()) {
-      if (this.moduleRegistry.declaredRange(name) !== declared[name]) return true;
+    for (const [name, installed] of this.moduleRegistry.modules) {
+      const range = declared[name];
+      if (this.moduleRegistry.declaredRange(name) === range) continue;
+      // A manifest that now names the installed release itself (a host pins
+      // what a successful build ran with) asks for the install it already has.
+      if (range !== undefined && installed.release?.name === name && installed.release.version === range) continue;
+      return true;
     }
     return false;
   }
 
+  private reportedVersions = '';
+
   /**
-   * The declared package a failed resolution should install: a bare import of a
-   * declared package that isn't installed yet, from code the CDN did not
-   * resolve — app sources, the self-hosted SDK, runtimes. A CDN package's own
-   * imports are the CDN's job (`/dep_tree` + the used-module closure), so they
-   * never install anything (its tooling-only files may require anything).
+   * Tell the host which release each declared package resolved to, so it can
+   * keep a material on the versions it was built with. Sent when it changes.
    */
-  private installableImport(specifier: string, filename: string, err: unknown): string | null {
-    if (!(err instanceof ModuleNotFoundError) || this.inCdnPackage(filename)) return null;
-    const name = packageName(specifier);
+  private reportResolvedDependencies(): void {
+    const versions: Record<string, string> = {};
+    for (const [name, installed] of this.moduleRegistry.modules) {
+      // An alias installs another package under this name: its version is not this name's.
+      if (this.moduleRegistry.isDeclared(name) && installed.release?.name === name) {
+        versions[name] = installed.release.version;
+      }
+    }
+    const reported = JSON.stringify(versions);
+    if (reported === this.reportedVersions) return;
+    this.reportedVersions = reported;
+    this.messageBus.sendMessage('dependencies-resolved', { versions });
+  }
+
+  /**
+   * The package a failed resolution should install, and the entry of it: a
+   * bare import of a package that isn't installed yet. `range` is its version
+   * when the app does not declare it:
+   *  - a Node built-in installs its browser implementation, pinned;
+   *  - code the CDN did not resolve — app sources, the self-hosted SDK,
+   *    runtimes — installs only what the app declares;
+   *  - a file of a CDN package that the bundler compiles itself (one outside
+   *    the closure the CDN computed, so `/dep_tree` never saw its imports)
+   *    installs what its own package.json declares, as npm would have, and
+   *    what the transform put there (the preset's implicit dependencies, such
+   *    as the polyfills Babel injects). Anything else such a file names stays
+   *    uninstalled: a package's tooling files may require the app's build tools.
+   */
+  private installableImport(
+    specifier: string,
+    filename: string,
+    err: unknown
+  ): { name: string; entry: string; range?: string } | null {
+    if (!(err instanceof ModuleNotFoundError)) return null;
+    const builtin = this.moduleRegistry.builtinPackage(specifier);
+    const target = builtin?.specifier ?? specifier;
+    const name = packageName(target);
     if (!name || this.moduleRegistry.modules.has(name)) return null;
-    if (!this.moduleRegistry.isDeclared(name)) {
+    const entry = packageEntry(target) ?? '.';
+    if (builtin) return { name, entry, range: builtin.range };
+    const owner = this.owningPackage(filename);
+    if (owner === null) {
+      if (this.moduleRegistry.isDeclared(name)) return { name, entry };
       err.message += ` — "${name}" is not listed in package.json dependencies`;
       return null;
     }
-    return name;
+    const range = this.moduleRegistry.rangeDeclaredBy(owner, name);
+    if (range !== undefined) return { name, entry, range };
+    return this.moduleRegistry.isDeclared(name) && hasOwnKey(this.implicitDependencies(), name) ? { name, entry } : null;
+  }
+
+  /** The packages the preset's own output imports (`augmentDependencies`). */
+  private implicitDependencies(): DepMap {
+    if (!this.preset) return {};
+    return (this.presetImplicit ??= this.preset.augmentDependencies({}));
+  }
+
+  /** The CDN-installed package `filename` is a file of, if it is one. */
+  private owningPackage(filename: string): string | null {
+    const at = filename.lastIndexOf('/node_modules/');
+    if (at < 0) return null;
+    const owner = packageName(filename.slice(at + '/node_modules/'.length));
+    return owner !== null && this.moduleRegistry.modules.has(owner) ? owner : null;
   }
 
   /** Whether `filename` is a file of a CDN-installed package. */
   private inCdnPackage(filename: string): boolean {
-    const at = filename.lastIndexOf('/node_modules/');
-    if (at < 0) return false;
-    const owner = packageName(filename.slice(at + '/node_modules/'.length));
-    return owner !== null && this.moduleRegistry.modules.has(owner);
+    return this.owningPackage(filename) !== null;
   }
 
   /** Drop every cache entry for a package a failed install rolled back. */
@@ -659,7 +740,7 @@ export class Bundler {
     // An install in flight may have made a package visible before its
     // dependency closure; code outside CDN packages waits for it to settle (a
     // CDN package's own imports run inside that install and must not).
-    if (packageName(specifier) && !this.inCdnPackage(filename)) {
+    if (packageName(this.moduleRegistry.builtinPackage(specifier)?.specifier ?? specifier) && !this.inCdnPackage(filename)) {
       const idle = this.moduleRegistry.whenIdle();
       if (idle) {
         await idle.catch(() => undefined);
@@ -669,9 +750,20 @@ export class Bundler {
     try {
       return await this.inlined(await this.resolveInstalled(specifier, filename, extensions));
     } catch (err) {
-      const name = this.installableImport(specifier, filename, err);
-      if (!name) throw err;
-      await this.moduleRegistry.ensureEntries(name, [packageEntry(specifier) ?? '.']);
+      const install = this.installableImport(specifier, filename, err);
+      if (!install) throw err;
+      try {
+        await this.moduleRegistry.ensureEntries(install.name, [install.entry], install.range);
+      } catch (installError) {
+        // The app's own imports report the install failure. A package's file
+        // may import what cannot be installed (an optional or Node-only
+        // dependency): that is the import that was not found, with the reason.
+        // A transport failure is neither: the build fails and is retried.
+        const transport = installError instanceof FetchError && installError.failure !== 'http';
+        if (transport || !this.inCdnPackage(filename)) throw installError;
+        (err as Error).message += ` (installing "${install.name}@${install.range ?? this.moduleRegistry.declaredRange(install.name)}" failed: ${describeThrown(installError)})`;
+        throw err;
+      }
       this.forgetMissingNodeModules();
       return this.inlined(await this.resolveInstalled(specifier, filename, extensions));
     }
@@ -703,6 +795,43 @@ export class Bundler {
     filename: string,
     extensions: string[] = DEFAULT_EXTENSIONS
   ): Promise<string> {
+    // A Node built-in is not a package to look up in node_modules. A package
+    // of that name the app declares is the app's choice (then this is null).
+    const builtin = this.moduleRegistry.builtin(specifier);
+    if (builtin) return this.resolveBuiltin(builtin, specifier, filename, extensions);
+    // A provided module's path is its id; there is no file behind it.
+    if (specifier[0] === '/' && providedModuleCode(specifier) !== undefined) return specifier;
+    return this.resolveModule(specifier, filename, extensions);
+  }
+
+  /**
+   * What a Node built-in loads for the file that imports it, in webpack's
+   * order: what that file's own package says it is in a browser (the
+   * `browser` field: `{ "crypto": false }`), else the module the bundler
+   * provides, else the npm package that implements it.
+   */
+  private resolveBuiltin(builtin: NodeBuiltin, specifier: string, filename: string, extensions: string[]): Promise<string> {
+    const key = `${dirname(filename)}\0builtin\0${specifier}\0${extensions.join(',')}`;
+    const cached = this.resolutionCache.get(key);
+    if (cached) return cached;
+    const promise = (async () => {
+      const name = packageName(specifier);
+      if (name !== null) {
+        // The resolver applies the package's own mapping. Without one it looks
+        // for an npm package of the built-in's name, which is not the built-in
+        // (the CDN installs whatever is published under a name code requires).
+        const mapped = await this.resolveModule(specifier, filename, extensions).catch(() => null);
+        if (mapped !== null && !mapped.startsWith(`/node_modules/${name}/`)) return mapped;
+      }
+      if (builtin.path !== undefined) return builtin.path;
+      return this.resolveModule(builtin.package.specifier, filename, extensions);
+    })();
+    this.resolutionCache.set(key, promise);
+    promise.catch(() => this.resolutionCache.delete(key));
+    return promise;
+  }
+
+  private async resolveModule(specifier: string, filename: string, extensions: string[]): Promise<string> {
     const moduleName = packageName(specifier.startsWith('/node_modules/')
       ? specifier.slice('/node_modules/'.length) : specifier);
     const load = moduleName ? this.selfHostLoaders.get(moduleName) : undefined;
@@ -760,60 +889,88 @@ export class Bundler {
     }
   }
 
+  /** Sources reach the bundler through the mounted filesystem: say which read failed, and how. */
+  private sourceReadError(action: string, path: string, cause: unknown): BundlerError {
+    const error = new BundlerError(
+      `Failed to ${action} source for "${path}": the file could not be read from the workspace filesystem (${describeThrown(cause)}).`,
+      path
+    );
+    this.loadAttempts.set(path, error);
+    return error;
+  }
+
+  /** The read error that kept `path` out of the current build, if one did. */
+  loadFailure(path: string): BundlerError | undefined {
+    return this.loadAttempts.get(path) ?? undefined;
+  }
+
+  /**
+   * Start transforming a module nothing waits for yet. Its failure belongs to
+   * the compile, which reports it when it reaches the module
+   * (moduleFinishedPromise), not to an unhandled rejection.
+   */
+  private transformInBackground(path: string): void {
+    this.transformModule(path).catch((err) => {
+      logger.debug(`Transform of ${path} failed`, err);
+    });
+  }
+
   private async _transformModule(path: string): Promise<Module> {
     let module = this.modules.get(path);
+    const attempted = this.loadAttempts.has(path);
+    this.loadAttempts.set(path, null);
     if (module) {
       if (module.compiled != null) {
         return Promise.resolve(module);
+      } else if (attempted && module.compilationError != null) {
+        // It failed in this compile already; every importer asks for it again.
+        return module;
       } else {
         // compilation got reset, we re-read the source to ensure it's the latest version.
         // reset happens mostly when we receive changes from the editor, so this ensures we actually output the changes...
         try {
           module.source = await this.fs.readFileAsync(path);
         } catch (cause) {
-          throw new BundlerError(
-            `Failed to re-read source for "${path}" — its source could not be read ` +
-              `(usually a failed fetch: a network error or a GitHub API rate limit)` +
-              (cause instanceof Error ? `: ${cause.message}` : '') +
-              '.'
-          );
+          throw this.sourceReadError('re-read', path, cause);
+        }
+        if (this.transformedBefore.has(module)) {
+          // An error of an earlier compile, and what the previous version
+          // imported, say nothing about this one.
+          module.compilationError = null;
+          module.dependencies = new Set();
+          module.dependencyMap = new Map();
+          module.dependencyErrors = new Map();
         }
       }
     } else {
+      const provided = this.providedModule(path);
+      if (provided) return provided;
       // §5.3 consult: a covered app source may already be transpiled in
       // `/transpiled` (seeded at boot, or written through earlier this session). A
       // HIT skips the Babel chain entirely — a seeded module is never transpiled
       // live (the §9 "zero babel transforms" criterion). Continue graph traversal
       // from the index's deps exactly as a precompiled CDN module does.
       if (isTransformable(path)) {
-        const hit = await this.artifactStore.consult(path);
+        const hit = await this.artifactStore.consult(path, () => this.fs.readFileAsync(path));
         if (hit) {
           const seededModule = new Module(path, hit.content, true, this);
           this.modules.set(path, seededModule);
           await Promise.all(hit.deps.map((dep) => seededModule.addDependency(dep)));
           for (const dep of seededModule.dependencies) {
-            this.transformModule(dep);
+            this.transformInBackground(dep);
           }
           return seededModule;
         }
       }
-      // FAIL FAST + CLEARLY at the original load. A source read fails here when the
-      // file never made it into the FS — almost always a FAILED SOURCE FETCH (network
-      // error, or a GitHub REST rate limit returning 403 with no CORS header on a
-      // cache-cold load), NOT a transpiler bug. Surfacing it now (at load) with an
-      // honest message stops it degrading into the misleading downstream
+      // FAIL FAST + CLEARLY at the original load: a source that cannot be read (the
+      // file is missing, or the filesystem request failed or timed out) is reported
+      // here with the underlying error, instead of degrading into a misleading
       // "has not been transpiled" thrown much later at require()/evaluate time.
       let content: string;
       try {
         content = await this.fs.readFileAsync(path);
       } catch (cause) {
-        throw new BundlerError(
-          `Failed to load source for "${path}" — its source could not be read, so it ` +
-            `was never transpiled. This is usually a failed source fetch (a network error, ` +
-            `or a GitHub API rate limit), not a transpiler bug` +
-            (cause instanceof Error ? `: ${cause.message}` : '') +
-            '.'
-        );
+        throw this.sourceReadError('load', path, cause);
       }
       module = new Module(path, content, false, this);
       this.modules.set(path, module);
@@ -821,6 +978,7 @@ export class Bundler {
     this.refreshMetadata(path, module.source);
     const progressItem = path.startsWith(APP_ROOT + '/') ? stripAppRoot(path) : undefined;
     if (progressItem) this.reportProgress({ phase: 'compiling', item: progressItem, completed: this.compiledFiles });
+    this.transformedBefore.add(module);
     const scanned = this.bootTranspiles.get(path);
     this.bootTranspiles.delete(path);
     if (scanned && scanned.source === module.source && module.compiled == null && module.compilationError == null) {
@@ -834,11 +992,27 @@ export class Bundler {
     // §5.3 write-through: cache a live-transpiled covered source so an in-session
     // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
     if (module.compiled != null && module.compilationError == null && isTransformable(path)) {
-      await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()], module.source);
     }
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
-      this.transformModule(resolvedDependency);
+      this.transformInBackground(resolvedDependency);
+    }
+    return module;
+  }
+
+  /**
+   * A module the bundler provides itself (the empty module, the Node built-ins
+   * without an npm implementation): its code is CommonJS already, so it
+   * neither reads a file nor compiles.
+   */
+  providedModule(path: string): Module | undefined {
+    let module = this.modules.get(path);
+    if (!module) {
+      const code = providedModuleCode(path);
+      if (code === undefined) return undefined;
+      module = new Module(path, code, true, this);
+      this.modules.set(path, module);
     }
     return module;
   }
@@ -854,7 +1028,7 @@ export class Bundler {
     });
   }
 
-  async moduleFinishedPromise(id: string, moduleIds: Set<string> = new Set()): Promise<any> {
+  async moduleFinishedPromise(id: string, moduleIds: Set<string> = new Set(), importer?: string): Promise<any> {
     if (moduleIds.has(id)) return;
 
     const foundPromise = this.transformationQueue.getItem(id);
@@ -862,21 +1036,30 @@ export class Bundler {
       await foundPromise;
     }
 
-    const asset = this.modules.get(id);
+    let asset = this.modules.get(id);
+    // A module that is missing, or failed in an earlier compile, gets one fresh
+    // attempt per compile: what stopped it (a file not written yet, a package
+    // not installed, a read or transform that timed out) may be gone by now.
+    if ((!asset || asset.compilationError != null || asset.compiled == null) && !this.loadAttempts.has(id)) {
+      if (asset) {
+        asset.compilationError = null;
+        asset.compiled = null;
+      }
+      asset = await this.transformModule(id);
+    }
+    const requiredBy = importer ? ` (imported by "${importer}")` : '';
     if (!asset) {
-      // Not in the tree ⇒ its transform never registered a module — the source most
-      // likely failed to load (a failed fetch: network error or GitHub API rate limit).
-      throw new BundlerError(
-        `Asset "${id}" is not in the compilation tree — its source likely failed to load ` +
-          `(a failed fetch: a network error or a GitHub API rate limit).`
+      throw (
+        this.loadFailure(id) ??
+        new BundlerError(`Module "${id}"${requiredBy} is not part of the build: it was never loaded.`, id)
       );
     } else {
       if (asset.compilationError != null) {
         throw asset.compilationError;
       } else if (asset.compiled == null) {
-        throw new BundlerError(
-          `Asset "${id}" has not been compiled — its source likely failed to load ` +
-            `(a failed fetch: a network error or a GitHub API rate limit).`
+        throw (
+          this.loadFailure(id) ??
+          new BundlerError(`Module "${id}"${requiredBy} has no compiled output: its transform did not finish.`, id)
         );
       }
     }
@@ -886,7 +1069,7 @@ export class Bundler {
     for (const dep of asset.dependencies) {
       if (!moduleIds.has(dep)) {
         try {
-          await this.moduleFinishedPromise(dep, moduleIds);
+          await this.moduleFinishedPromise(dep, moduleIds, id);
         } catch (err) {
           logger.debug(`Failed awaiting transpilation ${dep} required by ${id}`);
 
@@ -920,21 +1103,6 @@ export class Bundler {
         this.modules.set(filepath, module);
       }
     }
-  }
-
-  async preloadModules(): Promise<void> {
-    await Promise.all([
-      this.addPreloadedModule("path"),
-      // `fs` is backed by the shared filesystem (parent window over the Port),
-      // not a CDN polyfill — so app-code writes reach the parent and reflect in
-      // the editor.
-      this.addPreloadedModule("fs", SHARED_FS_MODULE_CODE),
-      this.addPreloadedModule("util"),
-      this.addPreloadedModule("assert"),
-      this.addPreloadedModule("module"),
-      this.addPreloadedModule("os"),
-      // this.addPreloadedModule("@internationalized/date"),
-    ]);
   }
 
   async fetchSource(url: string, integrity?: string): Promise<string> {
@@ -1196,13 +1364,28 @@ export class Bundler {
       throw new BundlerError('Cannot compile before preset has been initialized');
     }
 
+    // A build that failed before its first evaluation is retried in place, as an
+    // incremental compile. It starts over only when there is no linked install
+    // to keep, or package.json is no longer the one that install was made for.
+    if (this.isFirstLoad && this.compileAttempted && !(await this.linkedInstallIsCurrent())) {
+      // `/transpiled` outlives the modules: what the previous attempt wrote
+      // there for a file edited since is not that file's output any more.
+      for (const path of this.collectChangedFiles()) {
+        this.artifactStore.invalidate(path);
+      }
+      this.resetModules();
+      await this.initPreset(nullthrows(this.presetName, 'Preset has not been initialized'));
+    }
+    this.compileAttempted = true;
+    const cold = this.linkedPackageJSON === null;
+
     // ir.sandbox.boot (R3-46, LOAD_PROFILING_SPEC §3 phase 3): the sandbox is
     // constructed + preset-initialized and the FIRST compile is beginning. This is
     // the earliest in-sandbox instant the bus is guaranteed live, so it brackets
     // "iframe create → ready" (ir.open → here) from the compile-prep + node-module
     // load that follows (here → ir.deps) — the stretch where cold boot spends most
-    // of its time. Only on the first load; incremental recompiles are not boot.
-    if (this.isFirstLoad) {
+    // of its time. Only on a cold start; incremental recompiles are not boot.
+    if (cold) {
       emitPerfMarker(this.messageBus, 'ir.sandbox.boot');
     }
 
@@ -1219,7 +1402,7 @@ export class Bundler {
     const bootPhases: Array<[string, number]> = [];
     let bootLast = bootNow();
     const bootLap = (name: string): void => {
-      if (!this.isFirstLoad) return;
+      if (!cold) return;
       bootPhases.push([name, Math.round(bootNow() - bootLast)]);
       bootLast = bootNow();
     };
@@ -1243,12 +1426,15 @@ export class Bundler {
     this.cdnFastHits = 0;
     this.cdnFallThroughs = 0;
     this.fs.resetCache();
+    this.loadAttempts = new Map();
 
     let changedFiles: string[] = [];
-    if (!this.isFirstLoad) {
-      logger.debug('Started incremental compilation');
-
+    if (!cold) {
       changedFiles = this.collectChangedFiles();
+    }
+    // Nothing has run yet on a first-load retry: there is no update to skip and no HMR to miss.
+    if (!cold && !this.isFirstLoad) {
+      logger.debug('Started incremental compilation');
 
       if (!changedFiles.length) {
         logger.debug('Skipping compilation, no changes detected');
@@ -1268,12 +1454,10 @@ export class Bundler {
       if (!this.hasHMR && changesNeedingHMR.length) {
         return this.requestReload('HMR is not enabled, doing a full page refresh');
       }
-    } else {
+    } else if (cold) {
       // First load: files are read lazily from zenfs as the bundler traverses
-      // from the entrypoint. Only preloaded/local node_modules are written up
-      // front here.
-      await this.preloadModules();
-      bootLap('preloadModules');
+      // from the entrypoint. Node built-ins resolve through `nodeBuiltins` when
+      // something imports them; nothing is written up front for them.
       await this.addLocalModules();
       bootLap('addLocalModules');
       // Drain any spurious watcher events that fired during bootstrap so they
@@ -1287,16 +1471,29 @@ export class Bundler {
     }
 
     if (changedFiles.length) {
+      if (this.isFirstLoad) {
+        this.discardEvaluations(changedFiles);
+      }
       const promises = [];
       for (let changedFile of changedFiles) {
         const module = this.getModule(changedFile);
+        // A transform an earlier compile left running read the previous source.
+        const stale = this.transformationQueue.getItem(changedFile);
         if (module) {
-          module.resetCompilation();
+          if (this.isFirstLoad) {
+            // Not an update of a running app: recompile it, without the HMR
+            // bookkeeping (and the reload) resetCompilation implies.
+            this.discardCompilation(module);
+          } else {
+            module.resetCompilation();
+          }
           if (this.reloadRequested) {
             void Promise.allSettled(promises);
             return null;
           }
-          promises.push(this.transformModule(changedFile));
+        }
+        if (module || stale) {
+          promises.push(this.recompileChanged(changedFile, stale));
         }
       }
       await Promise.all(promises);
@@ -1304,12 +1501,12 @@ export class Bundler {
     }
 
     const pkgJsonChanged = changedFiles.find((f) => f === underAppRoot('/package.json'));
-    if (this.isFirstLoad || pkgJsonChanged) {
+    if (cold || pkgJsonChanged) {
       logger.debug('Loading node modules');
       await this.processPackageJSON();
       bootLap('processPackageJSON');
 
-      if (this.isFirstLoad) {
+      if (cold) {
         // §5.1 seed `/transpiled` from the cache zip's pre-transpiled artifacts
         // before installing node modules: their recorded specifiers are the boot
         // install's import set, and covered sources are consulted (not
@@ -1330,6 +1527,8 @@ export class Bundler {
 
         await this.loadNodeModules();
         bootLap('loadNodeModules');
+        // From here on a failed build keeps what was installed and linked.
+        this.linkedPackageJSON = this.packageJSONSource;
       } else {
         const declared = this.declaredDependencies();
         if (this.installedDependencyChanged(declared)) {
@@ -1340,7 +1539,7 @@ export class Bundler {
 
       // R3-46 diagnostic: one console line breaking down the boot→deps span by
       // sub-phase, so the next live run shows which await dominates cold boot.
-      if (this.isFirstLoad) {
+      if (cold) {
         const total = bootPhases.reduce((sum, [, ms]) => sum + ms, 0);
         const breakdown = bootPhases.map(([n, ms]) => `${n} ${ms}ms`).join(' · ');
         // eslint-disable-next-line no-console
@@ -1415,24 +1614,8 @@ export class Bundler {
       this.bootTranspiles.clear();
     }
 
-    const transpiledModules = Array.from(this.modules, ([name, value]) => {
-      return {
-        /**
-         * TODO: adds trailing for backwards compatibility
-         */
-        [name + ':']: {
-          source: {
-            isEntry: entryModule.filepath === value.filepath,
-            fileName: value.filepath,
-            compiledCode: value.compiled,
-          },
-        },
-      };
-    }).reduce((prev, curr) => {
-      return { ...prev, ...curr };
-    }, {});
-
-    this.messageBus.sendMessage('state', { state: { transpiledModules } });
+    this.messageBus.sendMessage('state', { state: { transpiledModules: this.transpiledModulesState(entryModule) } });
+    this.reportResolvedDependencies();
 
     // ir.transpile (R3-46): the babel transform pass is complete and the compiled
     // module graph has been forwarded. moduleCount is the size of that graph.
@@ -1483,30 +1666,137 @@ export class Bundler {
           this.scheduleSpotVerify();
         }
       } else {
-        this.modules.forEach((module) => {
-          if (module.hot.hmrConfig?.isDirty()) {
-            module.evaluate();
-          }
-        });
-
-        // TODO: Validate that this logic actually works...
-        // Check if any module has been invalidated, because in that case we need to
-        // restart evaluation.
-        const invalidatedModules = Object.values(this.modules).filter((m: Module) => {
-          if (m.hot.hmrConfig?.invalidated) {
-            m.resetCompilation();
-            this.transformModule(m.filepath);
-            return true;
-          }
-
-          return false;
-        });
-
-        if (invalidatedModules.length > 0) {
-          return this.compile();
-        }
+        this.applyHotUpdate();
       }
     };
+  }
+
+  /**
+   * Run the modules an update made dirty. A module that invalidates itself (its
+   * exports changed shape) is created once more and the update goes on to its
+   * importers, so the pass repeats until nothing is left to run.
+   */
+  private applyHotUpdate(): void {
+    const recreated = new Set<Module>();
+    for (;;) {
+      for (const module of this.modules.values()) {
+        if (this.reloadRequested) return;
+        if (module.hot.hmrConfig?.isDirty()) {
+          module.evaluate();
+        }
+      }
+      if (this.reloadRequested) return;
+
+      const invalidated = [...this.modules.values()].filter((module) => module.hot.hmrConfig?.invalidated);
+      if (!invalidated.length) return;
+      for (const module of invalidated) {
+        module.hot.hmrConfig?.setInvalidated(false);
+        // Created again and invalid again: it would never settle in place.
+        if (recreated.has(module)) {
+          this.requestReload(`${module.filepath} invalidated itself again after it was recreated, reloading`);
+          return;
+        }
+        recreated.add(module);
+        module.evaluation = null;
+        // Every module that ran against the old exports runs again, with the
+        // code it already has. One that does not accept updates cannot be
+        // patched in place.
+        for (const initiator of module.initiators) {
+          const importer = this.modules.get(initiator);
+          if (!importer?.evaluation || !importer.dependencies.has(module.filepath)) continue;
+          if (!importer.isHot()) {
+            this.requestReload(`${module.filepath} was invalidated and ${initiator} does not accept updates, reloading`);
+            return;
+          }
+          importer.evaluation = null;
+          importer.hot.hmrConfig?.setDirty(true);
+        }
+      }
+      for (const module of invalidated) {
+        module.evaluate();
+      }
+    }
+  }
+
+  /** Every module's compiled code, keyed as the host's `state` message expects. */
+  private transpiledModulesState(entryModule: Module) {
+    const transpiledModules: Record<
+      string,
+      { source: { isEntry: boolean; fileName: string; compiledCode: string | null } }
+    > = {};
+    for (const [name, value] of this.modules) {
+      // TODO: adds trailing for backwards compatibility
+      transpiledModules[name + ':'] = {
+        source: {
+          isEntry: entryModule.filepath === value.filepath,
+          fileName: value.filepath,
+          compiledCode: value.compiled,
+        },
+      };
+    }
+    return transpiledModules;
+  }
+
+  private discardCompilation(module: Module): void {
+    module.compilationError = null;
+    module.compiled = null;
+    this.artifactStore.invalidate(module.filepath);
+  }
+
+  /** Transform a changed file from its current source; `stale` is a transform of its previous source still in flight. */
+  private async recompileChanged(path: string, stale: Promise<Module> | undefined): Promise<void> {
+    try {
+      if (stale) {
+        await stale.catch(() => undefined);
+        const module = this.modules.get(path);
+        if (module) this.discardCompilation(module);
+      }
+      await this.transformModule(path);
+    } catch (err) {
+      // A file that is gone is no longer part of the build; whatever still
+      // imports it reports the failed read.
+      if (await this.fs.isFileAsync(path)) throw err;
+      this.modules.delete(path);
+    }
+  }
+
+  /**
+   * Whether the linked node_modules can serve another attempt at the first
+   * build: they exist, and package.json is byte for byte the one they were
+   * resolved for (dependencies, entry and resolution fields all live there).
+   */
+  private async linkedInstallIsCurrent(): Promise<boolean> {
+    if (this.linkedPackageJSON === null) return false;
+    try {
+      return (await this.fs.readFileAsync(underAppRoot('/package.json'))) === this.linkedPackageJSON;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Before a first-load retry: forget the evaluations of the changed modules
+   * and of everything that imports them, so they run again as a first run
+   * instead of as a hot update of a build that never came up.
+   */
+  private discardEvaluations(paths: string[]): void {
+    const pending = [...paths];
+    const seen = new Set<string>();
+    while (pending.length) {
+      const path = pending.pop() as string;
+      if (seen.has(path)) continue;
+      seen.add(path);
+      pending.push(...this.getInitiators(path));
+      const module = this.modules.get(path);
+      if (!module) continue;
+      try {
+        module.hot.hmrConfig?.callDisposeHandler();
+      } catch (err) {
+        logger.error(err);
+      }
+      module.hot = new HotContext(module);
+      module.evaluation = null;
+    }
   }
 
   // TODO: Support template languages...

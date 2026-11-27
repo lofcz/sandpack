@@ -13,6 +13,7 @@ import { settle } from 'settle-promise';
 import { Bundler } from '../bundler/bundler';
 import { getLinesAround } from './get-lines-around';
 import { SourceMap, getSourceMap } from './get-source-map';
+import { modulePathOfSourceURL } from './source-url';
 import StackFrame from './stack-frame';
 
 interface MapCacheEntry {
@@ -39,17 +40,15 @@ async function map(bundler: Bundler, frames: StackFrame[], contextLines: number 
 
   await settle(
     Array.from(fileNames).map(async (fileName) => {
-      if (!fileName.startsWith('webpack')) {
-        const parsedUrl = new URL(fileName, location.origin);
-        const resolvedFilepath = await bundler.resolveAsync(parsedUrl.pathname, '/index.js');
-        const foundModule = bundler.getModule(resolvedFilepath);
-
-        if (foundModule) {
-          const fileSource = foundModule.compiled || foundModule.source;
-          if (fileSource) {
-            const map = await getSourceMap(fileName, fileSource).catch(() => null);
-            cache[fileName] = { filepath: resolvedFilepath, fileSource, map };
-          }
+      // A frame of an evaluated module names it by its sourceURL, which holds
+      // the module's own path: nothing to resolve.
+      const filepath = modulePathOfSourceURL(fileName);
+      const foundModule = filepath === null ? undefined : bundler.getModule(filepath);
+      if (filepath !== null && foundModule) {
+        const fileSource = foundModule.compiled || foundModule.source;
+        if (fileSource) {
+          const map = await getSourceMap(fileName, fileSource).catch(() => null);
+          cache[fileName] = { filepath, fileSource, map };
         }
       }
     })
@@ -97,7 +96,9 @@ async function map(bundler: Bundler, frames: StackFrame[], contextLines: number 
       columnNumber,
       getLinesAround(lineNumber, contextLines, fileSource),
       functionName,
-      source,
+      // The map names its source by base name only ("App.tsx"); the module's
+      // own path says which file that is.
+      source == null ? source : filepath,
       line,
       column,
       getLinesAround(line, contextLines, originalSource)

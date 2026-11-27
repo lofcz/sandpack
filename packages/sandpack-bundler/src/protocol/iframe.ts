@@ -1,6 +1,12 @@
 import { Emitter } from '../utils/emitter';
 import { IInitConfig } from './message-types';
 
+const missingBabelPortError = (): Error =>
+  new Error(
+    'The host registered this frame without a Babel worker port, so no file can be transpiled. ' +
+      'The host creates that worker from its `babelWorkerURL` option.'
+  );
+
 /**
  * A message bus to handle messaging with the parent
  * used when this code is ran inside the iframe
@@ -16,7 +22,10 @@ export class IFrameParentMessageBus {
   private fsPortResolvers: Array<(port: MessagePort) => void> = [];
 
   private babelPort: MessagePort | null = null;
-  private babelPortResolvers: Array<(port: MessagePort) => void> = [];
+  private babelPortWaiters: Array<{ resolve: (port: MessagePort) => void; reject: (error: Error) => void }> = [];
+  // The handshake arrived without a Babel port: both ports ride on that one
+  // message, so none will follow and waiting for it would never end.
+  private babelPortMissing = false;
 
   private initConfig: IInitConfig | null = null;
   private initConfigResolvers: Array<(config: IInitConfig) => void> = [];
@@ -84,13 +93,19 @@ export class IFrameParentMessageBus {
       }
 
       const babelPort = evt.ports && evt.ports[1];
+      const babelPortWaiters = this.babelPortWaiters;
+      this.babelPortWaiters = [];
       if (babelPort) {
         babelPort.start();
         this.babelPort = babelPort;
-        const resolvers = this.babelPortResolvers;
-        this.babelPortResolvers = [];
-        for (const resolve of resolvers) {
-          resolve(babelPort);
+        this.babelPortMissing = false;
+        for (const waiter of babelPortWaiters) {
+          waiter.resolve(babelPort);
+        }
+      } else if (!this.babelPort) {
+        this.babelPortMissing = true;
+        for (const waiter of babelPortWaiters) {
+          waiter.reject(missingBabelPortError());
         }
       }
       return;
@@ -134,8 +149,11 @@ export class IFrameParentMessageBus {
     if (this.babelPort) {
       return Promise.resolve(this.babelPort);
     }
-    return new Promise((resolve) => {
-      this.babelPortResolvers.push(resolve);
+    if (this.babelPortMissing) {
+      return Promise.reject(missingBabelPortError());
+    }
+    return new Promise((resolve, reject) => {
+      this.babelPortWaiters.push({ resolve, reject });
     });
   }
 

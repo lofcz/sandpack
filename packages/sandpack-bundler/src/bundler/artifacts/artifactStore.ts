@@ -74,6 +74,12 @@ export class ArtifactStore {
   // In-flight `/transpiled` deletes, so a consult awaits a racing reset-delete and
   // never reads an entry that is being discarded (§5.3 sequencing).
   private pendingDeletes = new Map<string, Promise<void>>();
+  // The source each written-through entry was compiled from. `/transpiled` is
+  // keyed by path and outlives the module graph, and not every edit is announced
+  // to the bundler before it reads the file again (a build that starts over
+  // reads the whole filesystem): an entry made from another source is not this
+  // file's output.
+  private writtenFrom = new Map<string, string>();
   private didSeed = false;
   // App paths actually seeded from the index (the universe spot-verify samples).
   private seededPaths = new Set<string>();
@@ -152,11 +158,27 @@ export class ArtifactStore {
    * its recorded deps; MISS → null (caller live-transpiles). Awaits any in-flight
    * reset-delete for this path so a re-transform never reads a stale entry.
    */
-  async consult(appModulePath: string): Promise<{ content: string; deps: string[] } | null> {
+  async consult(
+    appModulePath: string,
+    currentSource?: () => Promise<string>,
+  ): Promise<{ content: string; deps: string[] } | null> {
     if (this.distrusted || !isAppModule(appModulePath)) return null;
     const transpiledPath = transpiledPathFor(appModulePath);
     const pending = this.pendingDeletes.get(transpiledPath);
     if (pending) await pending;
+    const writtenFrom = this.writtenFrom.get(appModulePath);
+    if (writtenFrom !== undefined && currentSource) {
+      let source: string | null = null;
+      try {
+        source = await currentSource();
+      } catch {
+        // Unreadable now: the caller's own read reports it.
+      }
+      if (source !== writtenFrom) {
+        this.invalidate(appModulePath);
+        return null;
+      }
+    }
     if (!(await this.fs.isFileAsync(transpiledPath))) return null;
     const content = await this.fs.readFileAsync(transpiledPath);
     // Genuinely-served seeded artifacts are the spot-verify universe (§5.7); a
@@ -176,10 +198,12 @@ export class ArtifactStore {
    * in-session re-read (e.g. after an HMR invalidation cascade that didn't reset
    * THIS module) hits the tmpfs instead of the chain.
    */
-  async writeThrough(appModulePath: string, compiled: string, deps: string[]): Promise<void> {
+  async writeThrough(appModulePath: string, compiled: string, deps: string[], source?: string): Promise<void> {
     if (!isAppModule(appModulePath)) return;
     await this.fs.writeFile(transpiledPathFor(appModulePath), compiled);
     this.deps.set(appModulePath, deps);
+    if (source === undefined) this.writtenFrom.delete(appModulePath);
+    else this.writtenFrom.set(appModulePath, source);
   }
 
   /**
@@ -191,6 +215,7 @@ export class ArtifactStore {
     if (!isAppModule(appModulePath)) return;
     const transpiledPath = transpiledPathFor(appModulePath);
     this.deps.delete(appModulePath);
+    this.writtenFrom.delete(appModulePath);
     const done = this.fs.deleteFile(transpiledPath).finally(() => {
       if (this.pendingDeletes.get(transpiledPath) === done) {
         this.pendingDeletes.delete(transpiledPath);

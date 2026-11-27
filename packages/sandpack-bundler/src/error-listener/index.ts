@@ -4,6 +4,7 @@ import * as logger from '../utils/logger';
 import { getStackFrames } from './get-stack-frames';
 import { permanentRegisterConsole, registerReactStack } from './proxy-console';
 import StackFrame from './stack-frame';
+import { describeThrown, toError } from './thrown-value';
 import { registerStackTraceLimit } from './stack-trace-limit';
 import { registerUnhandledError } from './unhandled-error';
 import { registerUnhandledRejection } from './unhandled-rejection';
@@ -30,10 +31,11 @@ export const crashWithFrames = (bundler: Bundler, crash: (record: ErrorRecord) =
         };
         // Draw the in-sandbox overlay FIRST (independent of the parent bus), so
         // the failure is visible in the preview even if messaging is torn down.
-        const first = record.stackFrames[0];
+        // The frame in the material's own code, when there is one.
+        const first = record.stackFrames.find((frame) => frame._originalLineNumber != null) ?? record.stackFrames[0];
         showErrorOverlay({
           title: unhandledRejection ? 'Unhandled Rejection' : 'Runtime Exception',
-          message: error.message || String(error),
+          message: describeThrown(error),
           path: (error as { path?: string }).path ?? first?._originalFileName ?? first?.fileName ?? undefined,
           line: first?._originalLineNumber ?? first?.lineNumber ?? undefined,
           column: first?._originalColumnNumber ?? first?.columnNumber ?? undefined,
@@ -57,7 +59,7 @@ export const crashWithFrames = (bundler: Bundler, crash: (record: ErrorRecord) =
 function registerRefreshError(target: EventTarget, handler: (error: Error) => void) {
   const listener = (evt: Event) => {
     const err = (evt as CustomEvent<{ error?: unknown }>).detail?.error;
-    handler(err instanceof Error ? err : new Error(String(err ?? 'React refresh failed')));
+    handler(toError(err ?? 'React refresh failed'));
   };
   target.addEventListener('sandpack:refresh-error', listener as EventListener);
   return () => {

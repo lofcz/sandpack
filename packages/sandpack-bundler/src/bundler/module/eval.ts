@@ -3,7 +3,9 @@ import * as swcHelpers from '@swc/helpers';
 
 /* eslint-disable no-eval */
 // import buildProcess from "./utils/process";
+import { BundlerError } from '../../errors/BundlerError';
 import * as logger from '../../utils/logger';
+import { awaitsAtTopLevel } from './topLevelAwait';
 
 const g = typeof window === 'undefined' ? self : window;
 
@@ -27,8 +29,6 @@ for (let [snake_case, v] of Object.entries(swcHelpers)) {
 export function getExtendedSwcHelpers(): typeof extendedSWCHelpers {
   return extendedSWCHelpers;
 }
-
-const hasGlobalDeclaration = /^const global/m;
 
 const noop = () => {};
 
@@ -99,6 +99,15 @@ export function getBrowserProcess(): typeof browserProcess {
   return browserProcess;
 }
 
+// Node's `setImmediate`: a task after the current one, cancellable. Browsers
+// have none, and code written for Node calls it without checking.
+const setImmediateShim = (callback: (...args: unknown[]) => void, ...args: unknown[]) =>
+  setTimeout(callback, 0, ...args);
+const clearImmediateShim = (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle);
+
+// What Node's module wrapper passes a CommonJS module, in this order.
+const MODULE_PARAMETERS = 'exports, require, module, __filename, __dirname';
+
 /* eslint-disable no-unused-vars */
 export default function (
   code: string,
@@ -108,34 +117,70 @@ export default function (
   globals: Object = {}
 ) {
   const global = g;
-  const process = browserProcess;
   // @ts-ignore
   g.global = global;
 
-  const allGlobals: { [key: string]: any } = {
-    require,
-    module: context,
-    exports: context.exports,
-    process,
+  // Names that are globals in Node. The page has no such globals, so they are
+  // the parameters of a function around the module's own.
+  const ambient: { [key: string]: any } = {
+    process: browserProcess,
     global,
+    setImmediate: setImmediateShim,
+    clearImmediate: clearImmediateShim,
     swcHelpers: extendedSWCHelpers,
     ...globals,
   };
+  const ambientNames = Object.keys(ambient);
 
-  if (hasGlobalDeclaration.test(code)) {
-    delete allGlobals.global;
-  }
-
-  const allGlobalKeys = Object.keys(allGlobals);
-  const globalsCode = allGlobalKeys.length ? allGlobalKeys.join(', ') : '';
-  const globalsValues = allGlobalKeys.map((k) => allGlobals[k]);
+  let run: (this: unknown, ...parameters: unknown[]) => void;
   try {
-    const newCode = `(function $csb$eval(` + globalsCode + `) {` + code + `\n})`;
+    // The module is the body of the inner function, as it is the body of Node's
+    // wrapper: its own `const process` or `class Buffer` shadows the ambient
+    // name (in one function, a parameter and a `const` of the same name is a
+    // SyntaxError). Nothing precedes the code on its first line, so line
+    // numbers are the module's own.
+    const source =
+      '(function (' + ambientNames.join(', ') + ') { return function $csb$eval(' + MODULE_PARAMETERS + ') {' + code + '\n} })';
     // @ts-ignore
-    (0, eval)(newCode).apply(allGlobals.global, globalsValues);
+    run = (0, eval)(source).apply(undefined, ambientNames.map((name) => ambient[name]));
+  } catch (err) {
+    throw evalError(unsupportedSyntax(err, code, context.id) ?? err, code);
+  }
+  try {
+    // Top-level `this` of a CommonJS module is `module.exports`. (A compiled
+    // ES module has none: its top-level `this` is rewritten to `undefined`.)
+    // `__filename` and `__dirname` are what webpack 5 gives a browser build.
+    run.call(context.exports, context.exports, require, context, '/index.js', '/');
 
     return context.exports;
   } catch (err) {
+    throw evalError(err, code);
+  }
+}
+
+/**
+ * Why code that does not parse as a module body is not supported, when the
+ * reason is known. Only looked for once evaluation has failed.
+ */
+function unsupportedSyntax(err: unknown, code: string, path: string): BundlerError | null {
+  if (!(err instanceof SyntaxError) || !awaitsAtTopLevel(code)) return null;
+  const error = new BundlerError(
+    `Top-level await is not supported: ${path} uses \`await\` outside a function. Move that code into an async function and call it.`,
+    path
+  );
+  error.title = 'Top-level await is not supported';
+  return error;
+}
+
+function evalError(err: unknown, code: string): unknown {
+  // A module that could not be loaded is for the code that required it to
+  // handle (a guarded require), as in Node; it is reported if nothing does.
+  if ((err as { code?: unknown } | null)?.code === 'MODULE_NOT_FOUND') {
+    logger.debug(err);
+    (err as { isEvalError?: boolean }).isEvalError = true;
+    return err;
+  }
+  {
     logger.error(err);
     // Never console.error the whole module body — agent problem collection
     // folds console errors into lint and would dump 100KB+ of minified source.
@@ -152,6 +197,6 @@ export default function (
     // @ts-ignore
     error.isEvalError = true;
 
-    throw error;
+    return error;
   }
 }
