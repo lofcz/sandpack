@@ -30,6 +30,75 @@ export function getExtendedSwcHelpers(): typeof extendedSWCHelpers {
 
 const hasGlobalDeclaration = /^const global/m;
 
+const noop = () => {};
+
+/**
+ * The `process` a module sees: the browser shim bundlers provide (as
+ * `process/browser` does), shared by every module so an `env` write is seen by
+ * all. Packages call more than `process.env` in browser builds: three 0.187's
+ * CommonJS entry calls `process.emitWarning`, and a missing method failed the
+ * whole preview with "process.emitWarning is not a function".
+ */
+const browserProcess = {
+  env: { NODE_ENV: 'development' } as Record<string, string>,
+  browser: true,
+  title: 'browser',
+  version: '',
+  versions: {} as Record<string, string>,
+  platform: 'browser',
+  argv: [] as string[],
+  execArgv: [] as string[],
+  pid: 1,
+  exitCode: undefined as number | undefined,
+  cwd: () => '/',
+  chdir: () => {
+    throw new Error('process.chdir is not supported');
+  },
+  umask: () => 0,
+  uptime: () => (typeof performance === 'undefined' ? 0 : performance.now() / 1000),
+  hrtime: Object.assign(
+    (previous?: [number, number]) => {
+      const now = typeof performance === 'undefined' ? Date.now() : performance.now();
+      const seconds = Math.floor(now / 1000);
+      const nanos = Math.floor((now % 1000) * 1e6);
+      if (!previous) return [seconds, nanos];
+      const diff = (seconds - previous[0]) * 1e9 + nanos - previous[1];
+      return [Math.floor(diff / 1e9), diff % 1e9];
+    },
+    { bigint: () => BigInt(Math.round((typeof performance === 'undefined' ? Date.now() : performance.now()) * 1e6)) }
+  ),
+  memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
+  nextTick: (callback: (...args: unknown[]) => void, ...args: unknown[]) => {
+    queueMicrotask(() => callback(...args));
+  },
+  emitWarning: (warning: unknown, ...rest: unknown[]) => {
+    const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] as { type?: string } | undefined)?.type;
+    const text = warning instanceof Error ? warning.message : String(warning);
+    console.warn(type ? `${type}: ${text}` : text);
+  },
+  on: noop,
+  once: noop,
+  off: noop,
+  addListener: noop,
+  removeListener: noop,
+  removeAllListeners: noop,
+  prependListener: noop,
+  prependOnceListener: noop,
+  emit: () => false,
+  listeners: () => [],
+  binding: () => {
+    throw new Error('process.binding is not supported');
+  },
+  exit: noop,
+  abort: noop,
+  kill: noop,
+};
+
+/** The shared browser `process` shim. */
+export function getBrowserProcess(): typeof browserProcess {
+  return browserProcess;
+}
+
 /* eslint-disable no-unused-vars */
 export default function (
   code: string,
@@ -39,11 +108,7 @@ export default function (
   globals: Object = {}
 ) {
   const global = g;
-  const process = {
-    env: {
-      NODE_ENV: 'development',
-    },
-  }; // buildProcess(env);
+  const process = browserProcess;
   // @ts-ignore
   g.global = global;
 
