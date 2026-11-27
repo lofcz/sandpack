@@ -13,7 +13,8 @@
 // RegistryFS treats as "file exists" when `files[rel] != null`). So a relative
 // import inside a package can be resolved by a direct map lookup with the resolver's
 // own extension/index order — NO gensync, NO package.json walk, NO micromatch —
-// PROVIDED no package.json alias (browser/exports/alias field) could remap it.
+// PROVIDED no package.json alias (browser/alias field) could remap it. (`exports`
+// only applies to bare specifiers, as in Node, so it never remaps a relative one.)
 //
 // Correctness gate (conservative, provably equivalent to the full resolver):
 // a package is fast-path eligible only when EVERY inlined package.json in its file
@@ -22,7 +23,7 @@
 // and fires ONLY for the bare package root, never a relative subpath — so for an
 // eligible package, `resolveAlias` is a no-op on every relative candidate and
 // resolution reduces to the extension/index file probing this module replicates.
-// ANY other alias key (a `browser`/`exports` subpath remap, an `alias` glob)
+// ANY other alias key (a `browser` subpath remap, an `alias` glob)
 // makes the package ineligible and we fall through to the real resolver. A
 // non-inlined or unparseable package.json is also ineligible (can't verify).
 //
@@ -134,8 +135,12 @@ export function resolveFromCdnLayout(
   for (const ext of exts) {
     if (exists(baseRel + ext)) return NODE_MODULES_PREFIX + pkg + '/' + baseRel + ext;
   }
+  // A directory that is a package of its own (the package root, or one with a
+  // package.json) is entered through that manifest's main fields, which only
+  // the resolver reads: its index file is not necessarily its entry.
+  if (!baseRel || files[`${baseRel}/package.json`] != null) return null;
   // Phase B — expandFile(base + '/index'): a directory index with each extension.
-  const indexRel = baseRel ? `${baseRel}/index` : 'index';
+  const indexRel = `${baseRel}/index`;
   for (const ext of exts) {
     if (exists(indexRel + ext)) return NODE_MODULES_PREFIX + pkg + '/' + indexRel + ext;
   }

@@ -439,14 +439,17 @@ describe('resolve', () => {
       expect(resolved).toBe('/node_modules/@scope/pkg-exports-main/export.js');
     });
 
-    it('should alias package.exports null/false to empty file', () => {
-      const resolved = resolveSync('package-exports/internal', {
-        filename: '/foo.js',
-        extensions: ['.ts', '.tsx', '.js', '.jsx'],
-        isFile,
-        readFile,
-      });
-      expect(resolved).toBe('/empty.js');
+    it('should refuse a package.exports null target instead of loading an empty file', () => {
+      expect(() =>
+        resolveSync('package-exports/internal', {
+          filename: '/foo.js',
+          extensions: ['.ts', '.tsx', '.js', '.jsx'],
+          isFile,
+          readFile,
+        })
+      ).toThrow(
+        /Package path "\.\/internal" is not exported by the package "package-exports".*'package-exports\/internal' from '\/foo\.js'/
+      );
     });
 
     it('should not load exports from the root package.json', () => {

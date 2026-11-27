@@ -78,8 +78,8 @@ describe('isFastPathEligible', () => {
   it('is INELIGIBLE with a browser-object remap', () => {
     expect(eligible({ 'package.json': JSON.stringify({ main: 'index.js', browser: { './a.js': './b.js' } }), 'index.js': 'x' })).toBe(false);
   });
-  it('is INELIGIBLE with an exports subpath map', () => {
-    expect(eligible({ 'package.json': JSON.stringify({ exports: { '.': './index.js', './feature': './feature.js' } }), 'index.js': 'x' })).toBe(false);
+  it('is eligible with an exports subpath map: exports never remap a relative import', () => {
+    expect(eligible({ 'package.json': JSON.stringify({ exports: { '.': './index.js', './feature': './feature.js' } }), 'index.js': 'x' })).toBe(true);
   });
   it('is INELIGIBLE with an alias field (adds globs)', () => {
     expect(eligible({ 'package.json': JSON.stringify({ alias: { './a': './b' } }), 'index.js': 'x' })).toBe(false);
@@ -154,6 +154,22 @@ describe('resolveFromCdnLayout', () => {
       pkg: { 'package.json': JSON.stringify({ main: 'index.js', browser: { './lib/a.js': './lib/b.js' } }), 'index.js': 'x', 'lib/a.js': 'a', 'lib/b.js': 'b' },
     };
     expect(run('./lib/a', '/node_modules/pkg/index.js', pkgs)).toBeNull();
+  });
+  it('falls through (null) for a directory that has its own package.json, and for the package root', () => {
+    const pkgs = {
+      pkg: {
+        'package.json': JSON.stringify({ main: 'lib/main.js' }),
+        'index.js': 'root-index',
+        'lib/main.js': 'main',
+        'lib/a.js': 'a',
+        'esm/package.json': JSON.stringify({ main: './entry.js' }),
+        'esm/entry.js': 'entry',
+        'esm/index.js': 'index',
+      } as FileSpec,
+    };
+    // `..` from lib/a.js is the package root: its entry is lib/main.js, not index.js.
+    expect(run('..', '/node_modules/pkg/lib/a.js', pkgs)).toBeNull();
+    expect(run('../esm', '/node_modules/pkg/lib/a.js', pkgs)).toBeNull();
   });
   it('falls through (null) when a relative import escapes node_modules', () => {
     expect(run('../../app/src/App', '/node_modules/pkg/index.js')).toBeNull();
