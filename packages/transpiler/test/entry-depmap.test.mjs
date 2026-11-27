@@ -52,10 +52,10 @@ test('computeDeclaredDepMap: augments, strips self-hosted, keeps tooling, sorts'
   // self-hosted removed; preset augments added; tooling stays declared (it is
   // only excluded from the request when nothing imports it); keys sorted.
   assert.deepEqual(out, {
-    'core-js': '3.22.7',
+    'core-js': '3.51.0',
     react: '^19.0.0',
-    'react-error-boundary': '^6.1.0',
-    'react-refresh': '^0.11.0',
+    'react-error-boundary': '^6.1.6',
+    'react-refresh': '0.19.0',
     vite: '^5.0.0',
   });
   assert.deepEqual(Object.keys(out), Object.keys(out).slice().sort());
@@ -129,10 +129,10 @@ test('computeRequestDepMap: requests only imported declared packages plus preset
   });
   const request = computeRequestDepMap(declared, importedPackages(['react', 'three/addons/controls', 'undeclared']));
   assert.deepEqual(request, {
-    'core-js': '3.22.7',
+    'core-js': '3.51.0',
     react: '^19.0.0',
-    'react-error-boundary': '^6.1.0',
-    'react-refresh': '^0.11.0',
+    'react-error-boundary': '^6.1.6',
+    'react-refresh': '0.19.0',
     three: '0.160.0',
   });
 });

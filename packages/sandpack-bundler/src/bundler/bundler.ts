@@ -42,7 +42,7 @@ import { emitPerfMarker } from './perfMarkers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename, dirname } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
-import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
+import { bindContext, CopyOnWrite, InMemory, mount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
@@ -1288,12 +1288,11 @@ export class Bundler {
   }
 
   async preloadMDXMetadata(): Promise<void> {
-    const re = globToRegex('/**/*.mdx');
     const zenFsLayer = this.fs;
     // Scan only the repo (`APP_ROOT`), not the whole filesystem — dynamic mounts
     // (e.g. `/firestore`) and virtual node_modules aren't sources of app MDX.
     const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir(APP_ROOT, {recursive: true})).map(
-      i => underAppRoot('/' + i)).filter(p => p.match(re));
+      i => underAppRoot('/' + i)).filter(p => p.endsWith('.mdx'));
     await Promise.all(mdxFiles.map(async (filepath) => {
       const source = await zenFsLayer.readFileAsync(filepath);
       this.refreshMetadata(filepath, source);

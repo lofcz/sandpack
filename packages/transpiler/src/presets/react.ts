@@ -82,9 +82,10 @@ export function selectReactChain(filepath: string): ReactChain | null {
  */
 export function augmentDependencies(dependencies: DepMap): DepMap {
   if (!dependencies['react-refresh']) {
-    dependencies['react-refresh'] = '^0.11.0';
+    // The runtime of the release whose Babel plugin compiles the app (package.json).
+    dependencies['react-refresh'] = '0.19.0';
   }
-  dependencies['core-js'] = '3.22.7';
-  dependencies['react-error-boundary'] = '^6.1.0';
+  dependencies['core-js'] = '3.51.0';
+  dependencies['react-error-boundary'] = '^6.1.6';
   return dependencies;
 }
