@@ -16,6 +16,10 @@ pub enum ModuleSpecifier {
         #[allow(dead_code)]
         subpath: Option<String>,
     },
+    /// `#name`: an entry of the importing package's own `imports` field
+    /// (Node subpath imports). Which file or package it loads is that
+    /// package's decision (`entries::PackageGraph`).
+    PackageImport(String),
 }
 
 /// Classify a static module specifier. `None` = not a graph edge (skip).
@@ -27,6 +31,10 @@ pub fn parse_module_specifier(spec: &str) -> Option<ModuleSpecifier> {
 
     if is_relative(spec) {
         return Some(ModuleSpecifier::Relative(spec.to_string()));
+    }
+
+    if spec.len() > 1 && spec.starts_with('#') {
+        return Some(ModuleSpecifier::PackageImport(spec.to_string()));
     }
 
     // Absolute POSIX paths, Windows paths, URI schemes (`https://…`, `node:fs`,
@@ -42,7 +50,7 @@ pub fn parse_module_specifier(spec: &str) -> Option<ModuleSpecifier> {
 pub fn package_name_from_specifier(spec: &str) -> Option<String> {
     match parse_module_specifier(spec)? {
         ModuleSpecifier::Package { name, .. } => Some(name),
-        ModuleSpecifier::Relative(_) => None,
+        ModuleSpecifier::Relative(_) | ModuleSpecifier::PackageImport(_) => None,
     }
 }
 
@@ -202,6 +210,21 @@ mod tests {
             })
         );
         assert_eq!(package_name_from_specifier("lucide-react"), Some("lucide-react".into()));
+    }
+
+    #[test]
+    fn package_imports_are_edges_but_never_package_names() {
+        assert_eq!(
+            parse_module_specifier("#minpath"),
+            Some(ModuleSpecifier::PackageImport("#minpath".into()))
+        );
+        assert_eq!(
+            parse_module_specifier("#internal/a/b.js"),
+            Some(ModuleSpecifier::PackageImport("#internal/a/b.js".into()))
+        );
+        assert_eq!(parse_module_specifier("#"), None);
+        assert_eq!(package_name_from_specifier("#minpath"), None);
+        assert!(!is_valid_package_name("#minpath"));
     }
 
     #[test]

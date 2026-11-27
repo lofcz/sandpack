@@ -31,6 +31,8 @@ pub struct PackageJSON {
     pub js_next_main: Option<String>,
     pub browser: Option<PackageJSONExport>,
     pub exports: Option<PackageJSONExport>,
+    /// The `imports` field: what the package's own `#name` specifiers load.
+    pub imports: Option<PackageJSONExport>,
     pub dependencies: Option<HashMap<String, String>>,
     /// Peers declared by the package. Used imports that only appear here
     /// (e.g. `@swc/helpers` for `@tailwindcss/browser`) must still enter
@@ -58,6 +60,7 @@ pub fn parse_pkg_json(content: String) -> Result<PackageJSON, ServerError> {
             js_next_main: None,
             browser: None,
             exports: None,
+            imports: None,
             dependencies: None,
             peer_dependencies: None,
         });
@@ -75,6 +78,7 @@ fn package_json_from_map(obj: &Map<String, Value>) -> PackageJSON {
         js_next_main: optional_entry_path(obj.get("jsnext:main")),
         browser: obj.get("browser").and_then(parse_export),
         exports: obj.get("exports").and_then(parse_export),
+        imports: obj.get("imports").and_then(parse_export),
         dependencies: obj.get("dependencies").and_then(string_map),
         peer_dependencies: obj.get("peerDependencies").and_then(string_map),
     }
@@ -165,31 +169,56 @@ fn parse_export(value: &Value) -> Option<PackageJSONExport> {
     }
 }
 
-// exports key order: 'browser', 'development', 'default', 'require', 'import'
+/// What an `exports`/`imports` target resolves to (Node's PACKAGE_TARGET_RESOLVE).
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ExportTarget {
+    /// The target as written (`*` not yet substituted).
+    Path(String),
+    /// `null`/`false`: excluded, the search ends.
+    Excluded,
+    /// Nothing here applies: the caller goes on to its next condition or item.
+    Unmatched,
+}
+
+// The conditions the bundler satisfies, in its priority (not the package's key
+// order): 'browser', 'development', 'default', 'require', 'import'.
 // Surprisingly good documentation of exports: https://webpack.js.org/guides/package-exports/
+const CONDITIONS: [&str; 5] = ["browser", "development", "default", "require", "import"];
+
+pub fn resolve_export_target(target: &PackageJSONExport) -> ExportTarget {
+    match target {
+        PackageJSONExport::Value(s) => ExportTarget::Path(s.clone()),
+        PackageJSONExport::Map(conditions) => {
+            for key in CONDITIONS {
+                if let Some(v) = conditions.get(key) {
+                    // A condition that leads nowhere (only `node`/`types` below
+                    // it) does not end the search: the next condition applies.
+                    match resolve_export_target(v) {
+                        ExportTarget::Unmatched => continue,
+                        found => return found,
+                    }
+                }
+            }
+            ExportTarget::Unmatched
+        }
+        PackageJSONExport::Vec(fallbacks) => {
+            let mut last = ExportTarget::Unmatched;
+            for fallback in fallbacks {
+                last = resolve_export_target(fallback);
+                if matches!(last, ExportTarget::Path(_)) {
+                    break;
+                }
+            }
+            last
+        }
+        PackageJSONExport::Ignored(_) => ExportTarget::Excluded,
+    }
+}
+
 pub fn get_export_entry(exports: &PackageJSONExport) -> Option<String> {
-    match exports {
-        PackageJSONExport::Value(s) => Some(s.clone()),
-        PackageJSONExport::Map(nested_exports_value) => {
-            for key in ["browser", "development", "default", "require", "import"] {
-                if let Some(v) = nested_exports_value.get(key) {
-                    return get_export_entry(v);
-                }
-            }
-
-            None
-        }
-        PackageJSONExport::Vec(vector_exports) => {
-            for export in vector_exports {
-                if let Some(found_export) = get_export_entry(export) {
-                    return Some(found_export);
-                }
-            }
-
-            None
-        }
-        // Fallback to none
-        _ => None,
+    match resolve_export_target(exports) {
+        ExportTarget::Path(path) => Some(path),
+        ExportTarget::Excluded | ExportTarget::Unmatched => None,
     }
 }
 
@@ -282,7 +311,8 @@ pub fn collect_pkg_entries(pkg_json: PackageJSON) -> Result<Vec<String>, ServerE
 #[cfg(test)]
 mod test {
     use crate::package::package_json::{
-        collect_pkg_entries, parse_pkg_json, PackageJSONExport,
+        collect_pkg_entries, get_export_entry, parse_pkg_json, resolve_export_target, ExportTarget,
+        PackageJSONExport,
     };
     use crate::utils::test_utils;
 
@@ -303,6 +333,39 @@ mod test {
             },
             "index.browser.js"
         );
+    }
+
+    fn exports_of(json: &str) -> PackageJSONExport {
+        parse_pkg_json(format!(r#"{{ "name": "x", "exports": {json} }}"#)).unwrap().exports.unwrap()
+    }
+
+    #[test]
+    fn a_condition_that_leads_nowhere_falls_through_to_the_next() {
+        // `browser` is first in the priority but only holds a `node` build.
+        let exports = exports_of(r#"{ "browser": { "node": "./node.js" }, "default": "./fallback.js" }"#);
+        assert_eq!(get_export_entry(&exports).as_deref(), Some("./fallback.js"));
+        let nested = exports_of(r#"{ "development": { "worker": "./w.js" }, "require": { "node": "./n.js", "default": "./cjs.js" } }"#);
+        assert_eq!(get_export_entry(&nested).as_deref(), Some("./cjs.js"));
+    }
+
+    #[test]
+    fn null_under_a_satisfied_condition_ends_the_search() {
+        let exports = exports_of(r#"{ "browser": null, "default": "./server.js" }"#);
+        assert_eq!(resolve_export_target(&exports), ExportTarget::Excluded);
+        let unmatched = exports_of(r#"{ "node": "./server.js" }"#);
+        assert_eq!(resolve_export_target(&unmatched), ExportTarget::Unmatched);
+        let fallbacks = exports_of(r#"[{ "node": "./node.js" }, "./list.js"]"#);
+        assert_eq!(get_export_entry(&fallbacks).as_deref(), Some("./list.js"));
+    }
+
+    #[test]
+    fn imports_are_parsed_like_exports() {
+        let pkg = parse_pkg_json(
+            r##"{ "name": "vfile", "imports": { "#minpath": { "node": "./lib/minpath.js", "default": "./lib/minpath.browser.js" } } }"##.to_string(),
+        )
+        .unwrap();
+        let Some(PackageJSONExport::Map(imports)) = pkg.imports else { panic!("imports not parsed") };
+        assert_eq!(get_export_entry(&imports["#minpath"]).as_deref(), Some("./lib/minpath.browser.js"));
     }
 
     #[test]

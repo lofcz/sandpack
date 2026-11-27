@@ -7,16 +7,24 @@
 //! follows only the package imports they make, so code an app never loads is
 //! neither inlined nor installed.
 //!
-//! A closure follows relative imports only. Bare imports — including a
-//! package importing itself (`three`'s addons import `three`) — are package
-//! edges with their entries, so each entry's files are served once. The
-//! `browser` field applies as the bundler applies it: file replacements are
-//! followed, and modules mapped to `false` are not loaded at all.
+//! A closure follows the imports that stay inside the package: relative
+//! ones, and `#name` specifiers its `imports` field maps to its own files.
+//! Bare imports — including a package importing itself (`three`'s addons
+//! import `three`) — are package edges with their entries, so each entry's
+//! files are served once. The `browser` field applies as the bundler applies
+//! it: file replacements are followed, and modules mapped to `false` are not
+//! loaded at all.
+//!
+//! `PackageGraph` is the one place those rules live: the transform pass
+//! (`process.rs`) walks the same edges, so every file a closure can reach has
+//! been transformed and its own imports are known.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::npm_specifier::{parse_module_specifier, ModuleSpecifier};
-use super::package_json::{get_export_entry, get_main_entry, parse_pkg_json, PackageJSON, PackageJSONExport};
+use super::package_json::{
+    get_main_entry, parse_pkg_json, resolve_export_target, ExportTarget, PackageJSON, PackageJSONExport,
+};
 use super::process::{MinimalCachedModule, MinimalFile};
 use super::resolver::{collect_files, extract_file_extension, file_path_to_dirname, make_mod_specifier_absolute};
 
@@ -55,13 +63,20 @@ struct BrowserField {
 }
 
 impl BrowserField {
-    fn from_pkg(pkg: &PackageJSON) -> Self {
+    fn from_pkg(pkg: &PackageJSON, files_map: &HashMap<String, u64>) -> Self {
         let mut field = BrowserField::default();
         let Some(PackageJSONExport::Map(map)) = &pkg.browser else {
             return field;
         };
         for (key, value) in map {
+            // A value written without "./" ("browser.js") names a file of the
+            // package when the package has that file; otherwise it is a module.
+            let as_file;
             let target = match value {
+                PackageJSONExport::Value(v) if files_map.contains_key(&make_mod_specifier_absolute(".", v)) => {
+                    as_file = format!("./{}", make_mod_specifier_absolute(".", v));
+                    Some(as_file.as_str())
+                }
                 PackageJSONExport::Value(v) => Some(v.as_str()),
                 _ => None, // `false` / `null`: not loaded in the browser
             };
@@ -101,45 +116,151 @@ impl BrowserField {
     }
 }
 
-/// The `exports` target for `entry`: None when no key matches (the bundler
-/// then resolves the entry as a file path), Some(None) when the key maps to
-/// `null`/`false`. Wildcard keys substitute their match; the longest prefix
-/// wins, as in Node.
-fn export_target(exports: &PackageJSONExport, entry: &str) -> Option<Option<String>> {
-    match exports {
-        PackageJSONExport::Map(map) if map.keys().any(|k| k.starts_with('.')) => {
-            if let Some(value) = map.get(entry) {
-                return Some(get_export_entry(value));
-            }
-            let mut best: Option<(usize, Option<String>)> = None;
-            for (key, value) in map {
-                let Some(star) = key.find('*') else { continue };
-                let (prefix, suffix) = (&key[..star], &key[star + 1..]);
-                if entry.len() < prefix.len() + suffix.len() || !entry.starts_with(prefix) || !entry.ends_with(suffix) {
-                    continue;
-                }
-                if best.as_ref().is_some_and(|(len, _)| *len >= prefix.len()) {
-                    continue;
-                }
-                let matched = &entry[prefix.len()..entry.len() - suffix.len()];
-                best = Some((prefix.len(), get_export_entry(value).map(|t| t.replace('*', matched))));
-            }
-            best.map(|(_, target)| target)
+/// The target the key of `map` matching `subpath` gives it, or None when no
+/// key matches (Node's PACKAGE_IMPORTS_EXPORTS_RESOLVE): an exact key, else
+/// the pattern key with the longest prefix, the longer key breaking a tie. A
+/// pattern's `*` stands for any non-empty rest, slashes included, and is
+/// substituted in the target; a key ending in `/` (the pre-pattern directory
+/// form) has the rest appended.
+fn subpath_target(map: &HashMap<String, PackageJSONExport>, subpath: &str) -> Option<ExportTarget> {
+    if !subpath.contains('*') && !subpath.ends_with('/') {
+        if let Some(value) = map.get(subpath) {
+            return Some(resolve_export_target(value));
         }
+    }
+    // (base length, key length), trailer length, directory key, value
+    let mut best: Option<((usize, usize), usize, bool, &PackageJSONExport)> = None;
+    for (key, value) in map {
+        let (base, trailer, directory) = match key.find('*') {
+            Some(star) if key[star + 1..].contains('*') => continue,
+            Some(star) => (&key[..star], &key[star + 1..], false),
+            None if key.ends_with('/') => (key.as_str(), "", true),
+            None => continue,
+        };
+        if subpath.len() <= base.len() || !subpath.starts_with(base) {
+            continue;
+        }
+        if !trailer.is_empty() && (subpath.len() < key.len() || !subpath.ends_with(trailer)) {
+            continue;
+        }
+        let specificity = (base.len(), key.len());
+        if best.as_ref().is_some_and(|(found, ..)| *found >= specificity) {
+            continue;
+        }
+        best = Some((specificity, trailer.len(), directory, value));
+    }
+    best.map(|((base_len, _), trailer_len, directory, value)| {
+        let matched = &subpath[base_len..subpath.len() - trailer_len];
+        match resolve_export_target(value) {
+            ExportTarget::Path(target) if directory => ExportTarget::Path(format!("{target}{matched}")),
+            ExportTarget::Path(target) => ExportTarget::Path(target.replace('*', matched)),
+            other => other,
+        }
+    })
+}
+
+/// The `exports` target for `entry`: None when no key matches (the bundler
+/// then resolves the entry as a file path).
+fn export_target(exports: &PackageJSONExport, entry: &str) -> Option<ExportTarget> {
+    match exports {
+        PackageJSONExport::Map(map) if map.keys().any(|k| k.starts_with('.')) => subpath_target(map, entry),
         // A bare target or a conditions object only exports the root.
-        _ if entry == ROOT_ENTRY => Some(get_export_entry(exports)),
+        _ if entry == ROOT_ENTRY => Some(resolve_export_target(exports)),
         _ => None,
     }
 }
 
-fn resolve_entry(pkg: &PackageJSON, entry: &str, files_map: &HashMap<String, u64>) -> Vec<String> {
-    let target = match pkg.exports.as_ref().and_then(|exports| export_target(exports, entry)) {
-        Some(Some(target)) => target,
-        Some(None) => return vec![],
-        None if entry == ROOT_ENTRY => get_main_entry(pkg),
-        None => entry.to_string(),
-    };
-    collect_files(&make_mod_specifier_absolute(".", &target), files_map, None)
+/// What an import made by a file of the package loads.
+pub enum Edge {
+    /// Files of the package itself.
+    Files(Vec<String>),
+    /// Another module, by the specifier that names it (the package's own name
+    /// for a self-import).
+    Package(String),
+    /// Nothing the browser build loads.
+    None,
+}
+
+/// The import graph of one package as the bundler resolves it: `exports`,
+/// `imports` and the `browser` field applied to the package's file list.
+pub struct PackageGraph<'a> {
+    pkg: &'a PackageJSON,
+    files_map: &'a HashMap<String, u64>,
+    browser: BrowserField,
+}
+
+impl<'a> PackageGraph<'a> {
+    pub fn new(pkg: &'a PackageJSON, files_map: &'a HashMap<String, u64>) -> Self {
+        PackageGraph { pkg, files_map, browser: BrowserField::from_pkg(pkg, files_map) }
+    }
+
+    /// The files a package-relative path (or glob) names, each replaced as the
+    /// `browser` field says. `ext` is the importing file's extension, tried first.
+    pub fn path_files(&self, path: &str, ext: Option<&str>) -> Vec<String> {
+        collect_files(&make_mod_specifier_absolute(".", path), self.files_map, ext)
+            .into_iter()
+            .filter_map(|f| self.browser.file(f))
+            .collect()
+    }
+
+    /// The files the entry `.` or `./subpath` loads.
+    pub fn entry_files(&self, entry: &str) -> Vec<String> {
+        let exported = self.pkg.exports.as_ref().and_then(|exports| export_target(exports, entry));
+        let as_path = || if entry == ROOT_ENTRY { get_main_entry(self.pkg) } else { entry.to_string() };
+        match exported {
+            Some(ExportTarget::Path(target)) => {
+                let files = self.path_files(&target, None);
+                // An exported file that does not exist: the entry may still be a path.
+                if files.is_empty() { self.path_files(&as_path(), None) } else { files }
+            }
+            Some(ExportTarget::Excluded) | Some(ExportTarget::Unmatched) => vec![],
+            None => self.path_files(&as_path(), None),
+        }
+    }
+
+    /// What the import `dep`, written in `file`, loads.
+    pub fn edge(&self, file: &str, dep: &str) -> Edge {
+        let ext = extract_file_extension(file);
+        match parse_module_specifier(dep) {
+            Some(ModuleSpecifier::Relative(path)) => {
+                let dir = file_path_to_dirname(file);
+                let found = collect_files(&make_mod_specifier_absolute(&dir, &path), self.files_map, ext);
+                Edge::Files(found.into_iter().filter_map(|f| self.browser.file(f)).collect())
+            }
+            Some(ModuleSpecifier::Package { .. }) => self.module_edge(dep, ext),
+            // `#name`: this package's `imports`, with the conditions of `exports`.
+            Some(ModuleSpecifier::PackageImport(name)) => {
+                let Some(PackageJSONExport::Map(imports)) = &self.pkg.imports else {
+                    return Edge::None;
+                };
+                match subpath_target(imports, &name) {
+                    Some(ExportTarget::Path(target)) if target.starts_with("./") => {
+                        Edge::Files(self.path_files(&target, ext))
+                    }
+                    // Only `imports` may name another module.
+                    Some(ExportTarget::Path(target)) => self.module_edge(&target, ext),
+                    _ => Edge::None,
+                }
+            }
+            None => Edge::None,
+        }
+    }
+
+    fn module_edge(&self, specifier: &str, ext: Option<&str>) -> Edge {
+        let specifier = match self.browser.module(specifier) {
+            Replacement::Excluded => return Edge::None,
+            Replacement::File(f) => {
+                let found = collect_files(&f, self.files_map, ext);
+                return Edge::Files(found.into_iter().filter_map(|f| self.browser.file(f)).collect());
+            }
+            Replacement::Module(m) => m,
+            Replacement::Keep => specifier.to_string(),
+        };
+        match parse_module_specifier(&specifier) {
+            Some(ModuleSpecifier::Package { .. }) => Edge::Package(specifier),
+            _ => Edge::None,
+        }
+    }
 }
 
 /// The closure of `entries` within the processed `module` of package `name`.
@@ -165,12 +286,12 @@ pub fn entry_closure<'a>(
         _ => None,
     }
     .unwrap_or_else(|| empty_pkg(name));
-    let browser = BrowserField::from_pkg(&pkg);
+    let graph = PackageGraph::new(&pkg, &files_map);
 
     let mut closure = EntryClosure::default();
     let mut queue: Vec<String> = Vec::new();
     for entry in entries {
-        queue.extend(resolve_entry(&pkg, entry, &files_map).into_iter().filter_map(|f| browser.file(f)));
+        queue.extend(graph.entry_files(entry));
     }
 
     while let Some(file) = queue.pop() {
@@ -180,29 +301,15 @@ pub fn entry_closure<'a>(
         let Some(MinimalFile::File { dependencies, .. }) = module.files.get(&file) else {
             continue; // not transformed: no known edges
         };
-        let dir = file_path_to_dirname(&file);
-        let ext = extract_file_extension(&file);
         for dep in dependencies {
-            match parse_module_specifier(dep) {
-                Some(ModuleSpecifier::Relative(path)) => {
-                    let found = collect_files(&make_mod_specifier_absolute(&dir, &path), &files_map, ext);
-                    queue.extend(found.into_iter().filter_map(|f| browser.file(f)));
-                }
-                Some(ModuleSpecifier::Package { .. }) => {
-                    let specifier = match browser.module(dep) {
-                        Replacement::Excluded => continue,
-                        Replacement::File(f) => {
-                            queue.extend(collect_files(&f, &files_map, ext).into_iter().filter_map(|f| browser.file(f)));
-                            continue;
-                        }
-                        Replacement::Module(m) => m,
-                        Replacement::Keep => dep.clone(),
-                    };
+            match graph.edge(&file, dep) {
+                Edge::Files(files) => queue.extend(files),
+                Edge::Package(specifier) => {
                     if let Some(ModuleSpecifier::Package { name: package, subpath }) = parse_module_specifier(&specifier) {
                         closure.packages.entry(package).or_default().insert(entry_of(subpath.as_deref()));
                     }
                 }
-                None => {}
+                Edge::None => {}
             }
         }
     }
@@ -218,6 +325,7 @@ fn empty_pkg(name: &str) -> PackageJSON {
         js_next_main: None,
         browser: None,
         exports: None,
+        imports: None,
         dependencies: None,
         peer_dependencies: None,
     }
@@ -342,6 +450,136 @@ mod tests {
         let closure = entry_closure("x", &module, [&".".to_string()]);
         assert_eq!(closure.files, set(&["browser.js", "index.js", "ws-shim.js"]));
         assert_eq!(closure.packages, BTreeMap::from([("react".to_string(), set(&["./jsx-runtime"]))]));
+    }
+
+    fn package(pkg: &str, files: &[(&str, &[&str])]) -> MinimalCachedModule {
+        let mut map = HashMap::from([("package.json".to_string(), file(pkg, &[]))]);
+        for (path, deps) in files {
+            map.insert(path.to_string(), file(path, deps));
+        }
+        MinimalCachedModule { files: map, modules: vec![] }
+    }
+
+    fn closure_of(name: &str, module: &MinimalCachedModule, entry: &str) -> EntryClosure {
+        entry_closure(name, module, [&entry.to_string()])
+    }
+
+    #[test]
+    fn the_longest_matching_prefix_wins_and_the_longer_key_breaks_a_tie() {
+        let module = package(
+            r#"{ "name": "ui", "exports": {
+                "./*": "./dist/*.js",
+                "./features/*": "./src/features/*.js",
+                "./features/*.css": "./styles/*.css",
+                "./features/exact": "./exact.js",
+                "./legacy/": "./old/"
+            } }"#,
+            &[
+                ("dist/button.js", &[]),
+                ("src/features/a/b.js", &[]),
+                ("styles/a.css", &[]),
+                ("exact.js", &[]),
+                ("old/x/y.js", &[]),
+            ],
+        );
+        assert_eq!(closure_of("ui", &module, "./button").files, set(&["dist/button.js"]));
+        assert_eq!(closure_of("ui", &module, "./features/a/b").files, set(&["src/features/a/b.js"]));
+        assert_eq!(closure_of("ui", &module, "./features/a.css").files, set(&["styles/a.css"]));
+        assert_eq!(closure_of("ui", &module, "./features/exact").files, set(&["exact.js"]));
+        assert_eq!(closure_of("ui", &module, "./legacy/x/y.js").files, set(&["old/x/y.js"]));
+    }
+
+    #[test]
+    fn top_level_conditions_are_the_root_entry() {
+        let module = package(
+            r#"{ "name": "decode", "main": "index.js",
+                "exports": { "deno": "./index.js", "browser": "./index.dom.js", "default": "./index.js" } }"#,
+            &[("index.js", &["character-entities"]), ("index.dom.js", &[])],
+        );
+        let closure = closure_of("decode", &module, ".");
+        assert_eq!(closure.files, set(&["index.dom.js"]));
+        assert!(closure.packages.is_empty());
+    }
+
+    #[test]
+    fn a_null_target_loads_nothing_and_a_missing_exported_file_falls_back_to_the_path() {
+        let module = package(
+            r#"{ "name": "x", "exports": { ".": "./index.js", "./internal": null, "./gone": "./dist/gone.js" } }"#,
+            &[("index.js", &[]), ("internal.js", &[]), ("gone.js", &[])],
+        );
+        assert!(closure_of("x", &module, "./internal").files.is_empty());
+        assert_eq!(closure_of("x", &module, "./gone").files, set(&["gone.js"]));
+    }
+
+    // vfile: `#minpath` is the browser build of a file of the package itself;
+    // an `imports` entry may also name another package.
+    #[test]
+    fn package_imports_are_followed_with_the_bundlers_conditions() {
+        let module = package(
+            r##"{ "name": "vfile", "exports": "./index.js", "imports": {
+                "#minpath": { "node": "./lib/minpath.js", "default": "./lib/minpath.browser.js" },
+                "#dep": { "node": "dep-node", "default": "dep-browser/sub" },
+                "#internal/*": "./lib/internal/*.js",
+                "#node-only": { "node": "./lib/minpath.js" }
+            } }"##,
+            &[
+                ("index.js", &["./lib/index.js"]),
+                ("lib/index.js", &["#minpath", "#dep", "#internal/a/b", "#node-only", "#undefined"]),
+                ("lib/minpath.js", &["path"]),
+                ("lib/minpath.browser.js", &[]),
+                ("lib/internal/a/b.js", &["unist-util-stringify-position"]),
+            ],
+        );
+        let closure = closure_of("vfile", &module, ".");
+        assert_eq!(
+            closure.files,
+            set(&["index.js", "lib/index.js", "lib/internal/a/b.js", "lib/minpath.browser.js"])
+        );
+        assert_eq!(
+            closure.packages,
+            BTreeMap::from([
+                ("dep-browser".to_string(), set(&["./sub"])),
+                ("unist-util-stringify-position".to_string(), set(&["."])),
+            ])
+        );
+    }
+
+    // axios lists `./lib/adapters/http.js` in `exports` and replaces it in `browser`.
+    #[test]
+    fn the_browser_field_replaces_an_exported_file() {
+        let module = package(
+            r#"{ "name": "axios", "module": "./index.js",
+                "browser": { "./lib/adapters/http.js": "./lib/helpers/null.js" },
+                "exports": { ".": { "browser": { "require": "./dist/browser/axios.cjs", "default": "./index.js" } },
+                    "./lib/adapters/http.js": "./lib/adapters/http.js" } }"#,
+            &[
+                ("index.js", &["./lib/adapters/adapters.js"]),
+                ("lib/adapters/adapters.js", &["./http.js"]),
+                ("lib/adapters/http.js", &["proxy-from-env", "http"]),
+                ("lib/helpers/null.js", &[]),
+            ],
+        );
+        let root = closure_of("axios", &module, ".");
+        assert_eq!(root.files, set(&["index.js", "lib/adapters/adapters.js", "lib/helpers/null.js"]));
+        assert!(root.packages.is_empty());
+        assert_eq!(closure_of("axios", &module, "./lib/adapters/http.js").files, set(&["lib/helpers/null.js"]));
+    }
+
+    #[test]
+    fn a_browser_value_without_dot_slash_is_a_file_of_the_package_when_it_has_one() {
+        let module = package(
+            r#"{ "name": "sloppy", "main": "index.js",
+                "browser": { "./node.js": "browser.js", "ws": "ws-shim.js", "fs": "memfs" } }"#,
+            &[
+                ("index.js", &["./node", "ws", "fs"]),
+                ("node.js", &["net"]),
+                ("browser.js", &[]),
+                ("ws-shim.js", &[]),
+            ],
+        );
+        let closure = closure_of("sloppy", &module, ".");
+        assert_eq!(closure.files, set(&["browser.js", "index.js", "ws-shim.js"]));
+        assert_eq!(closure.packages, BTreeMap::from([("memfs".to_string(), set(&["."]))]));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, span, Level};
-use transform::transformer::transform_file;
+use transform::transformer::{transform_file_as, SourceKind};
 
 use crate::app_error::ServerError;
 use crate::npm::package_content::{download_package_content, PackageContentFetcher};
@@ -13,8 +13,9 @@ use crate::npm_replicator::database::NpmDatabase;
 use crate::transform;
 use crate::utils::tar;
 
+use super::entries::{Edge, PackageGraph};
+use super::package_json;
 use super::package_json::PackageJSON;
-use super::{package_json, resolver};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -92,105 +93,114 @@ fn collect_file_paths(
     Ok(())
 }
 
-fn deps_to_files_and_modules(deps: &[String]) -> (HashSet<String>, HashSet<String>) {
-    use super::npm_specifier::{parse_module_specifier, ModuleSpecifier};
-
-    let mut used_modules: HashSet<String> = HashSet::new();
-    let mut file_specifiers: HashSet<String> = HashSet::new();
-
-    for dep in deps {
-        match parse_module_specifier(dep) {
-            Some(ModuleSpecifier::Relative(path)) => {
-                file_specifiers.insert(path);
-            }
-            Some(ModuleSpecifier::Package { name, .. }) => {
-                used_modules.insert(name);
-            }
-            None => {
-                // URI / absolute / invalid — not a package-graph edge.
-            }
-        }
-    }
-
-    (file_specifiers, used_modules)
+/// The `type` field that governs each file of a package: the one of the nearest
+/// package.json at or above the file's directory, as Node reads it (a `dist/esm`
+/// directory often carries its own `{"type":"module"}`). Read once per directory.
+struct PackageTypes<'a> {
+    pkg_root: &'a Path,
+    by_dir: HashMap<String, Option<String>>,
 }
 
+impl<'a> PackageTypes<'a> {
+    fn new(pkg_root: &'a Path) -> Self {
+        PackageTypes { pkg_root, by_dir: HashMap::new() }
+    }
+
+    /// `file` is package-relative, with forward slashes.
+    fn of(&mut self, file: &str) -> Option<String> {
+        let dir = file.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+        self.of_dir(dir)
+    }
+
+    fn of_dir(&mut self, dir: &str) -> Option<String> {
+        if let Some(known) = self.by_dir.get(dir) {
+            return known.clone();
+        }
+        let manifest = if dir.is_empty() {
+            self.pkg_root.join("package.json")
+        } else {
+            self.pkg_root.join(dir).join("package.json")
+        };
+        let found = match fs::read_to_string(manifest) {
+            // A package.json without `type` still ends the search: it is CommonJS.
+            Ok(content) => serde_json::from_str::<serde_json::Value>(content.trim_start_matches('\u{feff}'))
+                .ok()
+                .and_then(|value| value.get("type").and_then(|kind| kind.as_str()).map(String::from)),
+            Err(_) if dir.is_empty() => None,
+            Err(_) => {
+                let parent = dir.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+                self.of_dir(parent)
+            }
+        };
+        self.by_dir.insert(dir.to_string(), found.clone());
+        found
+    }
+}
+
+/// Transform `entries` and everything they load inside the package, along the
+/// edges the bundler follows (`PackageGraph`): relative imports, `#name`
+/// imports and `browser` replacements. A file the browser build replaces is
+/// not transformed; its replacement is, so its imports are known to
+/// `/dep_tree` (`styled-components.browser.esm.js` imports `stylis`).
 fn transform_files(
-    specifiers: Vec<String>,
-    curr_file: &str,
+    entries: Vec<String>,
+    graph: &PackageGraph,
     result_map: &mut HashMap<String, MinimalFile>,
-    files_map: &HashMap<String, u64>,
-    pkg_root: PathBuf,
+    pkg_root: &Path,
     used_modules: &mut HashSet<String>,
 ) {
-    let curr_dir = resolver::file_path_to_dirname(curr_file);
-    let curr_extension = resolver::extract_file_extension(curr_file);
-    for specifier in specifiers {
-        let abs_specifier =
-            resolver::make_mod_specifier_absolute(curr_dir.as_str(), specifier.as_str());
-        let found_files =
-            resolver::collect_files(abs_specifier.as_str(), files_map, curr_extension);
-        for found_file in found_files {
-            if !result_map.contains_key(found_file.as_str()) {
-                let file_path = pkg_root.clone().join(found_file.as_str());
-                match fs::read_to_string(file_path) {
-                    Ok(content) => match transform_file(found_file.as_str(), content.as_str()) {
-                        Ok(transformed_file) => {
-                            let deps: Vec<String> =
-                                transformed_file.dependencies.into_iter().collect();
-                            let (file_deps, module_deps) = deps_to_files_and_modules(&deps);
-
-                            for module_dep in module_deps {
-                                used_modules.insert(module_dep);
+    let mut queue: Vec<String> = entries.iter().flat_map(|entry| graph.path_files(entry, None)).collect();
+    let mut package_types = PackageTypes::new(pkg_root);
+    while let Some(found_file) = queue.pop() {
+        if result_map.contains_key(found_file.as_str()) {
+            continue;
+        }
+        let content = match fs::read_to_string(pkg_root.join(found_file.as_str())) {
+            Ok(content) => content,
+            // TODO: Return an error in this case?
+            Err(err) => {
+                error!("Error reading file: {:?}", err);
+                result_map.insert(found_file, MinimalFile::Failed(false));
+                continue;
+            }
+        };
+        let package_type = package_types.of(found_file.as_str());
+        let kind = SourceKind::of(found_file.as_str(), package_type.as_deref());
+        match transform_file_as(found_file.as_str(), content.as_str(), kind) {
+            Ok(transformed_file) => {
+                // Per-file `d` is what Sandpack walks with addDependency.
+                // Only keep edges the specifier parser accepts.
+                let graph_deps: Vec<String> = transformed_file
+                    .dependencies
+                    .into_iter()
+                    .filter(|d| super::npm_specifier::parse_module_specifier(d).is_some())
+                    .collect();
+                for dep in &graph_deps {
+                    match graph.edge(found_file.as_str(), dep) {
+                        Edge::Files(files) => queue.extend(files),
+                        Edge::Package(specifier) => {
+                            if let Some(name) = super::npm_specifier::package_name_from_specifier(&specifier) {
+                                used_modules.insert(name);
                             }
-
-                            // Per-file `d` is what Sandpack walks with addDependency.
-                            // Only keep edges the specifier parser accepts.
-                            let graph_deps: Vec<String> = deps
-                                .into_iter()
-                                .filter(|d| {
-                                    super::npm_specifier::parse_module_specifier(d).is_some()
-                                })
-                                .collect();
-
-                            result_map.insert(
-                                found_file.clone(),
-                                MinimalFile::File {
-                                    content: transformed_file.content,
-                                    dependencies: graph_deps,
-                                    is_transpiled: true,
-                                },
-                            );
-
-                            // Always keep this last, to prevent infinite loops
-                            transform_files(
-                                file_deps.into_iter().collect(),
-                                found_file.as_str(),
-                                result_map,
-                                files_map,
-                                pkg_root.clone(),
-                                used_modules,
-                            );
                         }
-                        Err(err) => {
-                            error!("{:?}", err);
-
-                            result_map.insert(
-                                found_file.clone(),
-                                MinimalFile::File {
-                                    content: content.clone(),
-                                    dependencies: vec![],
-                                    is_transpiled: false,
-                                },
-                            );
-                        }
-                    },
-                    // TODO: Return an error in this case?
-                    Err(err) => {
-                        error!("Error reading file: {:?}", err);
-                        result_map.insert(found_file.clone(), MinimalFile::Failed(false));
+                        Edge::None => {}
                     }
                 }
+                result_map.insert(
+                    found_file,
+                    MinimalFile::File {
+                        content: transformed_file.content,
+                        dependencies: graph_deps,
+                        is_transpiled: true,
+                    },
+                );
+            }
+            Err(err) => {
+                error!("{:?}", err);
+                result_map.insert(
+                    found_file,
+                    MinimalFile::File { content, dependencies: vec![], is_transpiled: false },
+                );
             }
         }
     }
@@ -253,12 +263,12 @@ fn transform_package(
             package_version = package_version
         )
         .entered();
+        let graph = PackageGraph::new(&parsed_pkg_json, &file_paths);
         transform_files(
             package_json::collect_pkg_entries(parsed_pkg_json.clone())?,
-            ".",
+            &graph,
             &mut module_files,
-            &file_paths,
-            pkg_output_path,
+            &pkg_output_path,
             &mut used_modules,
         );
         transform_files_span.exit();
@@ -403,4 +413,120 @@ pub fn parse_package_specifier(package_specifier: &str) -> Result<(String, Strin
     let (name, version) = parse_package_specifier_no_validation(package_specifier)?;
     Version::parse(&version)?;
     Ok((name, version))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A package unpacked on disk, removed when dropped.
+    struct Unpacked(PathBuf);
+
+    impl Unpacked {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let root = std::env::temp_dir().join(format!("sandpack-cdn-test-{}", nanoid!()));
+            for (path, content) in files {
+                let file = root.join(path);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(file, content).unwrap();
+            }
+            Unpacked(root)
+        }
+    }
+
+    impl Drop for Unpacked {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dependencies_of<'a>(module: &'a MinimalCachedModule, path: &str) -> Option<Vec<&'a str>> {
+        match module.files.get(path) {
+            Some(MinimalFile::File { dependencies, is_transpiled: true, .. }) => {
+                let mut deps: Vec<&str> = dependencies.iter().map(String::as_str).collect();
+                deps.sort();
+                Some(deps)
+            }
+            _ => None,
+        }
+    }
+
+    // styled-components: the entry is replaced by its browser build, which is
+    // the only file that imports `stylis`. Untransformed, its imports were
+    // unknown and `stylis` never entered `/dep_tree`.
+    #[test]
+    fn the_browser_replacement_of_an_entry_is_transformed_with_its_imports() {
+        let unpacked = Unpacked::new(&[
+            (
+                "package.json",
+                r#"{ "name": "styled", "version": "1.0.0",
+                    "main": "dist/styled.cjs.js", "module": "./dist/styled.esm.js",
+                    "browser": { "./dist/styled.esm.js": "./dist/styled.browser.esm.js" },
+                    "dependencies": { "stylis": "4.3.6", "node-only": "1.0.0" } }"#,
+            ),
+            ("dist/styled.esm.js", "import 'node-only'; export default 1;"),
+            ("dist/styled.browser.esm.js", "import { compile } from 'stylis'; import './shared.js'; export default compile;"),
+            ("dist/shared.js", "export const shared = 1;"),
+        ]);
+        let (module, dependencies) = transform_package(unpacked.0.clone(), "styled", "1.0.0").unwrap();
+
+        assert_eq!(dependencies_of(&module, "dist/styled.browser.esm.js"), Some(vec!["./shared.js", "stylis"]));
+        assert_eq!(dependencies_of(&module, "dist/shared.js"), Some(vec![]));
+        // The file the browser build never loads is listed, not transformed.
+        assert!(matches!(module.files.get("dist/styled.esm.js"), Some(MinimalFile::Ignored(_))));
+        assert!(dependencies["stylis"].is_used);
+        assert!(!dependencies["node-only"].is_used);
+
+        let closure = super::super::entries::entry_closure("styled", &module, [&".".to_string()]);
+        assert_eq!(closure.packages.keys().cloned().collect::<Vec<_>>(), vec!["stylis"]);
+    }
+
+    fn content_of<'a>(module: &'a MinimalCachedModule, path: &str) -> &'a str {
+        match module.files.get(path) {
+            Some(MinimalFile::File { content, .. }) => content.as_str(),
+            other => panic!("{path} was not transformed: {other:?}"),
+        }
+    }
+
+    // A file is an ES module or a script by the nearest package.json's `type`,
+    // not by the package root's: `esm/` with its own `{"type":"module"}` inside a
+    // CommonJS package, and a UMD file (libtess) whose top-level `this` must stay.
+    #[test]
+    fn each_file_is_transformed_as_the_kind_its_nearest_package_json_declares() {
+        let unpacked = Unpacked::new(&[
+            ("package.json", r#"{ "name": "mixed", "version": "1.0.0", "main": "index.js" }"#),
+            ("index.js", "require('./umd.js'); require('./esm/side.js');"),
+            ("umd.js", "this.answer = 42; module.exports = this.answer;"),
+            ("esm/package.json", r#"{ "type": "module" }"#),
+            ("esm/side.js", "globalThis.seen = typeof this;"),
+        ]);
+        let (module, _) = transform_package(unpacked.0.clone(), "mixed", "1.0.0").unwrap();
+
+        // A script: `this` is left for the bundler to bind to module.exports.
+        assert!(content_of(&module, "umd.js").contains("this.answer"));
+        // An ES module without imports or exports is still a module: `this` is undefined.
+        assert!(!content_of(&module, "esm/side.js").contains("typeof this"));
+    }
+
+    // vfile: `#minpath` stays in the importer's dependency list (the bundler
+    // links by it) and the file it names for the browser is transformed.
+    #[test]
+    fn package_imports_stay_in_the_dependency_list_and_their_targets_are_transformed() {
+        let unpacked = Unpacked::new(&[
+            (
+                "package.json",
+                r##"{ "name": "vfile", "version": "6.0.3", "type": "module", "exports": "./index.js",
+                    "imports": { "#minpath": { "node": "./lib/minpath.js", "default": "./lib/minpath.browser.js" } } }"##,
+            ),
+            ("index.js", "export { minpath } from '#minpath';"),
+            ("lib/minpath.js", "export { default as minpath } from 'node:path';"),
+            ("lib/minpath.browser.js", "export const minpath = { sep: '/' };"),
+        ]);
+        let (module, _) = transform_package(unpacked.0.clone(), "vfile", "6.0.3").unwrap();
+
+        assert_eq!(dependencies_of(&module, "index.js"), Some(vec!["#minpath"]));
+        assert_eq!(dependencies_of(&module, "lib/minpath.browser.js"), Some(vec![]));
+        assert!(matches!(module.files.get("lib/minpath.js"), Some(MinimalFile::Ignored(_))));
+        assert!(module.modules.is_empty());
+    }
 }

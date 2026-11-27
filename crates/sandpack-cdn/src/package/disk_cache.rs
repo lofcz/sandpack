@@ -18,7 +18,9 @@ use super::process::{MinimalCachedModule, ModuleDependenciesMap};
 /// v2: inject_helpers before common_js → bare `_interop_require_*` (broken).
 /// v3: dual common_js + external @swc/helpers (worked, but wrong model).
 /// v4: inline helpers via `ecma_helpers_inline` (common_js → inject_helpers).
-const DISK_FORMAT: u32 = 4;
+/// v5: the transform pass follows the `browser` field and `#name` imports, so
+///     replacement files are transformed and `d` keeps `#name` edges.
+const DISK_FORMAT: u32 = 5;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DiskEnvelope {
