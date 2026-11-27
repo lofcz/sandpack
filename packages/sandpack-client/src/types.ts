@@ -50,6 +50,13 @@ export interface ClientOptions {
    */
   immutableUrlPrefixes?: string[];
   /**
+   * How long the runtime client waits for the bundler page to boot after it
+   * navigates the frame, in milliseconds. Past it the client reports a failed
+   * build ("Preview page failed to load") to its listeners and honours reload
+   * requests again. Defaults to 30 000; 0 turns the deadline off.
+   */
+  bootTimeoutMs?: number;
+  /**
    * Absolute root of the self-hosted sandpack-cdn (`…/sandpack-cdn/`).
    * Forwarded on `register-frame` so the opaque-origin bundler never falls
    * back to a public CDN. Required for Priprava self-hosting.

@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 import type { SandpackFS } from "../../fs/SandpackFS";
+import type { ClientOptions, SandpackMessage } from "../../types";
 import { SandpackRuntime } from "./index";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -26,7 +27,13 @@ describe("runtime navigation and registration ownership", () => {
   let onUnexpectedNavigation: jest.Mock;
   let warnings: jest.SpyInstance;
   let errors: jest.SpyInstance;
-  let workers: { postMessage: jest.Mock; terminate: jest.Mock }[];
+  let workers: {
+    postMessage: jest.Mock;
+    terminate: jest.Mock;
+    onerror?: ((event: Partial<ErrorEvent>) => void) | null;
+    onmessageerror?: (() => void) | null;
+  }[];
+  let mount: (options?: ClientOptions) => SandpackRuntime;
   const originalWorker = globalThis.Worker;
   const originalMessageChannel = globalThis.MessageChannel;
 
@@ -70,28 +77,32 @@ describe("runtime navigation and registration ownership", () => {
       getAttribute: (key: string) => attributes.get(key) ?? null,
     } as unknown as HTMLIFrameElement;
     onUnexpectedNavigation = jest.fn();
-    client = new SandpackRuntime(
-      frame,
-      {
-        fs: filesystem as unknown as SandpackFS,
-        template: "vanilla",
-        entry: "/host-entry.js",
-        dependencies: { shared: "2.0.0", "html-to-image": "1.11.13" },
-      },
-      {
-        bundlerURL: "https://host.example/sandpack/",
-        babelWorkerURL: "/babel-worker.js",
-        startRoute: "preview",
-        sandpackCdnRoot: "https://host.example/sandpack-cdn/",
-        immutableUrlPrefixes: [
-          "https://host.example/sandpack-cdn/package/",
-        ],
-        onUnexpectedNavigation,
-      },
-    );
+    mount = (options = {}) =>
+      new SandpackRuntime(
+        frame,
+        {
+          fs: filesystem as unknown as SandpackFS,
+          template: "vanilla",
+          entry: "/host-entry.js",
+          dependencies: { shared: "2.0.0", "html-to-image": "1.11.13" },
+        },
+        {
+          bundlerURL: "https://host.example/sandpack/",
+          babelWorkerURL: "/babel-worker.js",
+          startRoute: "preview",
+          sandpackCdnRoot: "https://host.example/sandpack-cdn/",
+          immutableUrlPrefixes: [
+            "https://host.example/sandpack-cdn/package/",
+          ],
+          onUnexpectedNavigation,
+          ...options,
+        },
+      );
+    client = mount();
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     client.destroy();
     warnings.mockRestore();
     errors.mockRestore();
@@ -318,5 +329,210 @@ describe("runtime navigation and registration ownership", () => {
     await flush();
     expect(onUnexpectedNavigation).toHaveBeenCalledTimes(1);
     expect(filesystem.connectRemote).toHaveBeenCalledTimes(1);
+  });
+
+  /** The build results a host's listener received, as the fields they carry. */
+  const heard = (listener: jest.Mock) =>
+    listener.mock.calls
+      .map(([message]: [SandpackMessage]) => {
+        const { type, action, title, message: text, compilatonError } =
+          message as unknown as Record<string, unknown>;
+        return { type, action, title, message: text, compilatonError };
+      })
+      .filter(({ type }) => type === "action" || type === "done");
+  const failedBuild = (title: string, message: unknown) => [
+    { type: "action", action: "show-error", title, message },
+    { type: "done", compilatonError: true },
+  ];
+  const sentToFrame = (type: string) =>
+    frameWindow.postMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === type);
+
+  describe("a Babel worker that fails", () => {
+    it("is reported at once to the listeners, as a failed build, and to the bundler", async () => {
+      const listener = jest.fn();
+      client.listen(listener);
+      send({ type: "initialized" });
+      await flush();
+      // A script that failed to load fires a plain event: no message.
+      workers[0].onerror!({});
+      expect(heard(listener)).toEqual(
+        failedBuild(
+          "Babel worker failed",
+          "/babel-worker.js: the script could not be loaded or started",
+        ),
+      );
+      expect(client.errors).toHaveLength(1);
+      expect(sentToFrame("babel-worker-error")).toEqual([
+        expect.objectContaining({
+          url: "/babel-worker.js",
+          message: "the script could not be loaded or started",
+          $id: client.iframeProtocol.channelId,
+        }),
+      ]);
+      // One report per worker, and it is left to finish what it still can.
+      expect(workers[0].onerror).toBeNull();
+      expect(workers[0].onmessageerror).toBeNull();
+      expect(workers[0].terminate).not.toHaveBeenCalled();
+    });
+
+    it("names the uncaught error and where it was thrown", async () => {
+      const listener = jest.fn();
+      client.listen(listener);
+      send({ type: "initialized" });
+      await flush();
+      workers[0].onerror!({
+        message: "Uncaught ReferenceError: x is not defined",
+        filename: "https://host.example/babel-worker.js",
+        lineno: 3,
+        colno: 9,
+      });
+      expect(heard(listener)[0].message).toBe(
+        "/babel-worker.js: Uncaught ReferenceError: x is not defined (https://host.example/babel-worker.js:3:9)",
+      );
+    });
+
+    it("reports a message the worker sent that could not be read", async () => {
+      const listener = jest.fn();
+      client.listen(listener);
+      send({ type: "initialized" });
+      await flush();
+      workers[0].onmessageerror!();
+      expect(heard(listener)).toEqual(
+        failedBuild(
+          "Babel worker failed",
+          "/babel-worker.js: a message from the worker could not be deserialized",
+        ),
+      );
+    });
+
+    it("is replaced without a report while it only warms, and its replacement is reported", async () => {
+      const listener = jest.fn();
+      client.listen(listener);
+      workers[0].onerror!({});
+      expect(heard(listener)).toEqual([]);
+      expect(workers[0].terminate).toHaveBeenCalledTimes(1);
+      send({ type: "initialized" });
+      await flush();
+      expect(workers).toHaveLength(2);
+      expect(workers[1].postMessage).toHaveBeenCalledTimes(1);
+      expect(registrations()).toHaveLength(1);
+      expect(heard(listener)).toEqual([]);
+      workers[1].onerror!({});
+      expect(heard(listener)).toHaveLength(2);
+    });
+
+    it("is reported when it cannot even be created for the registration", async () => {
+      const listener = jest.fn();
+      client.listen(listener);
+      workers[0].onerror!({});
+      (globalThis.Worker as unknown as jest.Mock).mockImplementation(() => {
+        throw new Error("worker-src blocks /babel-worker.js");
+      });
+      send({ type: "initialized" });
+      await flush();
+      expect(heard(listener)).toEqual(
+        failedBuild(
+          "Babel worker failed",
+          "/babel-worker.js: worker-src blocks /babel-worker.js",
+        ),
+      );
+      expect(registrations()).toHaveLength(0);
+    });
+
+    it("says nothing for a worker a newer navigation has replaced", async () => {
+      const listener = jest.fn();
+      client.listen(listener);
+      send({ type: "initialized" });
+      await flush();
+      const lateError = workers[0].onerror!;
+      client.dispatch({ type: "refresh" });
+      lateError({});
+      expect(heard(listener)).toEqual([]);
+      expect(sentToFrame("babel-worker-error")).toHaveLength(0);
+    });
+  });
+
+  it("terminates the worker warmed for a navigation that is overtaken at once", () => {
+    client.dispatch({ type: "refresh" });
+    client.dispatch({ type: "refresh" });
+    expect(workers).toHaveLength(3);
+    expect(workers[0].terminate).toHaveBeenCalledTimes(1);
+    expect(workers[1].terminate).toHaveBeenCalledTimes(1);
+    expect(workers[2].terminate).not.toHaveBeenCalled();
+    client.destroy();
+    expect(workers[2].terminate).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a bundler page that never boots", () => {
+    const PAGE_FAILED = failedBuild(
+      "Preview page failed to load",
+      "https://host.example/sandpack/preview did not start within 1000 ms of being opened.",
+    );
+    let listener: jest.Mock;
+    /** Replace the client with one whose navigation is timed by fake timers. */
+    const remount = (options: ClientOptions = { bootTimeoutMs: 1000 }) => {
+      client.destroy();
+      jest.useFakeTimers();
+      navigate.mockClear();
+      client = mount(options);
+      listener = jest.fn();
+      client.listen(listener);
+    };
+
+    it("is reported after the boot deadline, and reload requests are honoured again", () => {
+      remount();
+      jest.advanceTimersByTime(999);
+      expect(heard(listener)).toEqual([]);
+      send({ type: "request-refresh" });
+      expect(navigate).toHaveBeenCalledTimes(1); // still waiting for that page
+      jest.advanceTimersByTime(1);
+      expect(heard(listener)).toEqual(PAGE_FAILED);
+      expect(client.errors).toHaveLength(1);
+      send({ type: "request-refresh" });
+      expect(navigate).toHaveBeenCalledTimes(2);
+      // The new navigation gets a deadline of its own.
+      jest.advanceTimersByTime(1000);
+      expect(heard(listener)).toEqual([...PAGE_FAILED, ...PAGE_FAILED]);
+    });
+
+    it("is not reported when the page boots in time", async () => {
+      remount();
+      send({ type: "initialized", boot: bootOf(0) });
+      expect(jest.getTimerCount()).toBe(0);
+      jest.advanceTimersByTime(60_000);
+      expect(heard(listener)).toEqual([]);
+    });
+
+    it("times only the latest navigation", () => {
+      remount();
+      jest.advanceTimersByTime(600);
+      client.dispatch({ type: "refresh" });
+      jest.advanceTimersByTime(600);
+      expect(heard(listener)).toEqual([]);
+      jest.advanceTimersByTime(400);
+      expect(heard(listener)).toEqual(PAGE_FAILED);
+    });
+
+    it("still registers a page that was only slow, instead of tearing it down", async () => {
+      remount();
+      jest.advanceTimersByTime(1000);
+      expect(heard(listener)).toEqual(PAGE_FAILED);
+      jest.useRealTimers();
+      send({ type: "initialized", boot: bootOf(0) });
+      await flush();
+      expect(onUnexpectedNavigation).not.toHaveBeenCalled();
+      expect(registrations()).toHaveLength(1);
+    });
+
+    it("has no deadline when the option turns it off, and none after destroy", () => {
+      remount({ bootTimeoutMs: 0 });
+      expect(jest.getTimerCount()).toBe(0);
+      remount();
+      expect(jest.getTimerCount()).toBe(1);
+      client.destroy();
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 });

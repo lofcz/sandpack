@@ -15,6 +15,17 @@ import type {
 export type SandpackRuntimeMessage = BaseSandpackMessage &
   (
     | { type: "request-refresh" }
+    | {
+        /** The exact release each declared package was installed at (sent when it changes). */
+        type: "dependencies-resolved";
+        versions: Record<string, string>;
+      }
+    | {
+        /** The Babel worker behind the frame's port failed to load or crashed. */
+        type: "babel-worker-error";
+        url: string;
+        message: string;
+      }
     | ({ type: "build-progress" } & SandpackBuildProgress)
     | {
         type: "initialized";

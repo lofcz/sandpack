@@ -47,6 +47,21 @@ import type {
 import { CHANNEL_NAME, type SandpackRuntimeMessage } from "./types";
 import { getExtension, getTemplate } from "./utils";
 
+/**
+ * Default boot deadline. A choice, not a measurement: long enough for a cold
+ * download of the bundler on a slow connection, short enough to name the
+ * failure before a host's own build watchdog reports a vaguer one.
+ */
+const BOOT_TIMEOUT_MS = 30_000;
+
+/** Why a Worker fired `error`: a script that failed to load carries no message. */
+const describeWorkerError = (event: ErrorEvent): string => {
+  if (!event.message) return "the script could not be loaded or started";
+  return event.filename
+    ? `${event.message} (${event.filename}:${event.lineno}:${event.colno})`
+    : event.message;
+};
+
 const SUFFIX_PLACEHOLDER = "-{{suffix}}";
 
 const BUNDLER_URL =
@@ -86,6 +101,10 @@ export class SandpackRuntime extends SandpackClient {
   private initializationVersion = 0;
   /** Parent-owned Babel transpiler worker, connected to the iframe by port. */
   private babelWorker: Worker | null = null;
+  /** The worker whose port the registered frame holds; null while only warming. */
+  private connectedBabelWorker: Worker | null = null;
+  /** Deadline for the page of the latest navigation to boot. */
+  private bootDeadline: ReturnType<typeof setTimeout> | null = null;
   /**
    * Which `initialized` messages this client will honour (R3-353). Armed by
    * {@link setLocationURLIntoIFrame} — i.e. by every navigation THIS CLIENT
@@ -362,17 +381,104 @@ export class SandpackRuntime extends SandpackClient {
       return undefined;
     }
 
-    // Classic (not module) worker: the bundled worker lazily loads its Babel
-    // plugin/preset chunks via importScripts(), which a `{ type: "module" }`
-    // worker forbids. The worker artifact is built with outputFormat "global"
-    // to match (see sandpack-bundler's babelWorker Parcel target).
-    const worker = this.babelWorker ?? new Worker(workerURL);
-    this.babelWorker = worker;
+    let worker = this.babelWorker;
+    if (!worker) {
+      // The warm worker could not be created or has failed since: try once more.
+      try {
+        worker = this.babelWorker = this.spawnBabelWorker(workerURL);
+      } catch (error) {
+        this.reportBabelWorkerFailure(
+          workerURL,
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
+      }
+    }
+    this.connectedBabelWorker = worker;
 
     const channel = new MessageChannel();
     // Hand the worker one end; it binds its message bus to this port on receipt.
     worker.postMessage({ type: "connect" }, [channel.port1]);
     return channel.port2;
+  }
+
+  private spawnBabelWorker(workerURL: string): Worker {
+    // Classic (not module) worker: the bundled worker lazily loads its Babel
+    // plugin/preset chunks via importScripts(), which a `{ type: "module" }`
+    // worker forbids. The worker artifact is built with outputFormat "global"
+    // to match (see sandpack-bundler's babelWorker Parcel target).
+    const worker = new Worker(workerURL);
+    // A script that failed to load and an uncaught error show up only here, on
+    // the Worker: the port the iframe holds stays silent, and every transform
+    // would wait out its own timeout.
+    worker.onerror = (event) =>
+      this.onBabelWorkerFailure(worker, workerURL, describeWorkerError(event));
+    worker.onmessageerror = () =>
+      this.onBabelWorkerFailure(
+        worker,
+        workerURL,
+        "a message from the worker could not be deserialized",
+      );
+    return worker;
+  }
+
+  private onBabelWorkerFailure(
+    worker: Worker,
+    workerURL: string,
+    reason: string,
+  ): void {
+    // A worker a later navigation has replaced is already terminated.
+    if (this.destroyed || this.babelWorker !== worker) return;
+    if (this.connectedBabelWorker !== worker) {
+      // Still warming, so nothing waits on it: registration spawns another one,
+      // and a failure of that one is reported.
+      worker.terminate();
+      this.babelWorker = null;
+      return;
+    }
+    // One report per worker. It is not terminated: after an uncaught error it
+    // may still answer, and the next navigation replaces it either way.
+    worker.onerror = null;
+    worker.onmessageerror = null;
+    this.reportBabelWorkerFailure(workerURL, reason);
+  }
+
+  private reportBabelWorkerFailure(workerURL: string, reason: string): void {
+    // The bundler cannot see the worker behind its port. One that does not know
+    // this message ignores it.
+    this.iframeProtocol.dispatch({
+      type: "babel-worker-error",
+      url: workerURL,
+      message: reason,
+    });
+    this.emitBuildFailure("Babel worker failed", `${workerURL}: ${reason}`);
+  }
+
+  /**
+   * Tells this client's listeners about a failure the bundler cannot report,
+   * as the messages of a failed build, which every host already handles.
+   */
+  private emitBuildFailure(title: string, message: string): void {
+    const envelope = { $id: this.iframeProtocol.channelId, codesandbox: true };
+    const messages: SandpackRuntimeMessage[] = [
+      {
+        ...envelope,
+        type: "action",
+        action: "show-error",
+        title,
+        message,
+        path: "",
+        line: 0,
+        column: 0,
+        payload: {},
+      },
+      { ...envelope, type: "done", compilatonError: true },
+    ];
+    for (const failure of messages) {
+      Object.values(this.iframeProtocol.channelListeners).forEach((listener) =>
+        listener(failure),
+      );
+    }
   }
 
   private serviceWorkerHandshake() {
@@ -487,12 +593,13 @@ export class SandpackRuntime extends SandpackClient {
     this.immutableFetchProtocol?.dispose();
     this.babelWorker?.terminate();
     this.babelWorker = null;
+    this.connectedBabelWorker = null;
     // Download and initialize the compiler alongside the iframe bootstrap.
     // Only an authorized register-frame handshake receives its MessagePort;
     // warming the parent-owned worker grants the document no capabilities.
     if (this.options.babelWorkerURL) {
       try {
-        this.babelWorker = new Worker(this.options.babelWorkerURL);
+        this.babelWorker = this.spawnBabelWorker(this.options.babelWorkerURL);
       } catch {
         // Registration retries and reports the normal worker creation error.
       }
@@ -513,6 +620,31 @@ export class SandpackRuntime extends SandpackClient {
     // One navigation per armed boot. Calling location.replace as well can
     // schedule a second load and also throws for a cross-origin document.
     this.iframe.src = url.toString();
+    this.armBootDeadline(nonce, urlSource);
+  }
+
+  /**
+   * Bounds the wait for the page of the navigation just started. A page that
+   * never loads (offline, a 404 after a deploy) posts nothing, and its armed
+   * boot would keep every later reload request ignored.
+   */
+  private armBootDeadline(nonce: string, pageURL: string): void {
+    this.clearBootDeadline();
+    const timeoutMs = this.options.bootTimeoutMs ?? BOOT_TIMEOUT_MS;
+    if (!(timeoutMs > 0) || !Number.isFinite(timeoutMs)) return;
+    this.bootDeadline = setTimeout(() => {
+      this.bootDeadline = null;
+      if (this.destroyed || !this.initGuard.expire(nonce)) return;
+      this.emitBuildFailure(
+        "Preview page failed to load",
+        `${pageURL} did not start within ${timeoutMs} ms of being opened.`,
+      );
+    }, timeoutMs);
+  }
+
+  private clearBootDeadline(): void {
+    if (this.bootDeadline !== null) clearTimeout(this.bootDeadline);
+    this.bootDeadline = null;
   }
 
   /**
@@ -526,7 +658,10 @@ export class SandpackRuntime extends SandpackClient {
    */
   private consumeExpectedInitialization(nonce?: unknown): boolean {
     const decision = this.initGuard.decide(nonce);
-    if (decision === "accept") return true;
+    if (decision === "accept") {
+      if (this.initGuard.pending === 0) this.clearBootDeadline();
+      return true;
+    }
     // A page of a navigation this frame has since overtaken: the newer one
     // replaces it, and nothing is connected or registered for it meanwhile.
     if (decision === "stale") return false;
@@ -553,6 +688,7 @@ export class SandpackRuntime extends SandpackClient {
     this.unsubscribeChannelListener();
     this.unsubscribeGlobalListener();
     this.unsubscribeFsWatcher?.();
+    this.clearBootDeadline();
     this.fileResolverProtocol?.dispose();
     this.immutableFetchProtocol?.dispose();
     this.babelWorker?.terminate();

@@ -62,6 +62,16 @@
  *
  * A boot without a nonce comes from a bundler that predates them and spends
  * the oldest armed credit, exactly like the counter did.
+ *
+ * ## Boot deadline
+ *
+ * A navigation whose page never loads (offline, a 404 after a deploy) would
+ * stay armed forever and keep `request-refresh` coalesced against it. The
+ * client therefore gives up on it after a deadline ({@link expire}): it stops
+ * counting as pending, and the host is told the page failed to load. Its nonce
+ * stays good for one boot, because a page that is only slow is still the page
+ * the host put there; refusing it would tear down a healthy preview. A boot
+ * without a nonce gets no such grace: with nothing armed it is refused.
  */
 
 /** The frame URL query parameter carrying a navigation's boot nonce. */
@@ -81,6 +91,8 @@ const randomNonce = (): string => {
 export class InitializationGuard {
   /** Nonces of host navigations whose page has not booted yet, oldest first. */
   private armed: string[] = [];
+  /** The navigation given up on last: its page may still boot, once. */
+  private late: string | null = null;
   private detached = false;
 
   /**
@@ -120,16 +132,36 @@ export class InitializationGuard {
       const index = this.armed.indexOf(nonce);
       if (index >= 0) {
         this.armed.splice(0, index + 1);
+        this.late = null;
         return "accept";
       }
       if (this.armed.length > 0 && this.issued.has(nonce)) return "stale";
+      if (nonce === this.late) {
+        this.late = null;
+        return "accept";
+      }
     } else if (nonce === undefined && this.armed.length > 0) {
       this.armed.shift();
+      this.late = null;
       return "accept";
     }
     this.detached = true;
     this.armed = [];
+    this.late = null;
     return "refuse";
+  }
+
+  /**
+   * Give up waiting for a navigation's page, and for every older one with it.
+   * Returns whether it was still outstanding, i.e. whether its page failed to
+   * boot in time. See "Boot deadline" above for what a late boot then gets.
+   */
+  expire(nonce: string): boolean {
+    const index = this.armed.indexOf(nonce);
+    if (index < 0) return false;
+    this.armed.splice(0, index + 1);
+    this.late = nonce;
+    return true;
   }
 
   /** Spend one armed boot without a nonce (a bundler that predates them). */

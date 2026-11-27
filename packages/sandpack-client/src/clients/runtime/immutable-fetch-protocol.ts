@@ -15,6 +15,9 @@
  * `src/utils/fetch.ts`) — keep the two in sync.
  */
 
+import { EXTENSIONS_MAP } from "./mime";
+import { getExtension } from "./utils";
+
 /**
  * Allowlist entries: an exact ORIGIN plus a path prefix matched against the
  * NORMALIZED pathname. R3-364: the old check was `url.startsWith(prefix)` on
@@ -27,12 +30,17 @@
 interface AllowedOrigin {
   origin: string;
   pathPrefix: string;
+  /**
+   * What the prefix serves: single files of a package as published, or the
+   * module CDN's packed `/package/` payloads. Decides what may be cached.
+   */
+  serves: "files" | "packages";
 }
 
 const IMMUTABLE_URL_ALLOWLIST: AllowedOrigin[] = [
   // The self-hosted module CDN is supplied through immutableUrlPrefixes.
   // unpkg files, requested by the bundler at registry-resolved exact versions.
-  { origin: "https://unpkg.com", pathPrefix: "/" },
+  { origin: "https://unpkg.com", pathPrefix: "/", serves: "files" },
   // Self-hosted, versioned @immediately-run/sdk builds (SDK_PACKAGING_SPEC
   // §5/§11, Option A). The /v/<version>/ path encodes the exact version, so
   // responses are immutable; the bundler fetches these when an app opts the SDK
@@ -41,19 +49,23 @@ const IMMUTABLE_URL_ALLOWLIST: AllowedOrigin[] = [
   {
     origin: "https://immediately-run.github.io",
     pathPrefix: "/immediately-run-sdk/v/",
+    serves: "files",
   },
 ];
 
 /**
- * Is a PARSED URL inside the allowlist? Origin is compared exactly (a userinfo
- * or lookalike host cannot match) and the path prefix against the URL parser's
- * NORMALIZED pathname; additionally, any dot segment — literal or
- * percent-encoded, in any hex case — is refused, so no spelling of `..` can
- * cross the prefix boundary after a server-side decode.
+ * The allowlist entry a PARSED URL falls under, if any. Origin is compared
+ * exactly (a userinfo or lookalike host cannot match) and the path prefix
+ * against the URL parser's NORMALIZED pathname; additionally, any dot segment —
+ * literal or percent-encoded, in any hex case — is refused, so no spelling of
+ * `..` can cross the prefix boundary after a server-side decode.
  */
-const inPolicy = (u: URL, allowlist: AllowedOrigin[]): boolean => {
+const policyFor = (
+  u: URL,
+  allowlist: AllowedOrigin[],
+): AllowedOrigin | undefined => {
   if (!/^https?:$/.test(u.protocol) || u.username || u.password)
-    return false;
+    return undefined;
   const segments = u.pathname.split("/").map((segment) => {
     try {
       return decodeURIComponent(segment).toLowerCase();
@@ -61,9 +73,9 @@ const inPolicy = (u: URL, allowlist: AllowedOrigin[]): boolean => {
       return segment.toLowerCase();
     }
   });
-  if (segments.some((s) => s === ".." || s === ".")) return false;
-  if (/%2e/.test(u.pathname.toLowerCase())) return false;
-  return allowlist.some(
+  if (segments.some((s) => s === ".." || s === ".")) return undefined;
+  if (/%2e/.test(u.pathname.toLowerCase())) return undefined;
+  return allowlist.find(
     ({ origin, pathPrefix }) =>
       u.origin === origin && u.pathname.startsWith(pathPrefix),
   );
@@ -84,7 +96,9 @@ const allowedPrefix = (prefix: string): AllowedOrigin[] => {
     ) {
       return [];
     }
-    return [{ origin: url.origin, pathPrefix: url.pathname }];
+    return [
+      { origin: url.origin, pathPrefix: url.pathname, serves: "packages" },
+    ];
   } catch {
     return [];
   }
@@ -104,6 +118,45 @@ const serializeResponse = async (
   contentType: res.headers.get("content-type") ?? "",
   body: await res.arrayBuffer(),
 });
+
+/**
+ * Content types of a module CDN `/package/` payload. sandpack-cdn labels its
+ * msgpack replies `application/javascript` so that proxies compress them
+ * (crates/sandpack-cdn/src/router/custom_reply.rs); the others are the labels
+ * msgpack goes by when it is named for what it is.
+ */
+const PACKAGE_PAYLOAD_TYPES = new Set([
+  "application/javascript",
+  "application/msgpack",
+  "application/x-msgpack",
+  "application/vnd.msgpack",
+]);
+
+const HTML_TYPES = new Set(["text/html", "application/xhtml+xml"]);
+
+/**
+ * May this response be kept forever under its URL? Only when it is what the
+ * URL promises. A page served in a payload's place with status 200 (an SPA
+ * fallback while the CDN is down, a captive portal) would otherwise fail every
+ * later boot until the cache is wiped.
+ */
+const cacheable = (
+  result: ImmutableFetchResult,
+  url: URL,
+  serves: AllowedOrigin["serves"],
+): boolean => {
+  if (result.status !== 200) return false;
+  const type = result.contentType.split(";", 1)[0].trim().toLowerCase();
+  if (serves === "packages") {
+    return result.body.byteLength > 0 && PACKAGE_PAYLOAD_TYPES.has(type);
+  }
+  // A package may ship any kind of file, HTML included, but an HTML document
+  // under a name that is not an HTML file's stands in for the file.
+  return (
+    !HTML_TYPES.has(type) ||
+    EXTENSIONS_MAP.get(getExtension(url.pathname).toLowerCase()) === type
+  );
+};
 
 // CacheStorage may be unavailable (insecure context) or fail (storage
 // pressure); degrade to a plain fetch rather than failing the request.
@@ -158,6 +211,9 @@ const matchesIntegrity = async (
  *    Mismatched bytes are returned (so the consumer's own check fails closed with
  *    a clear error) but NEVER cached, so a bad upstream window can't poison the
  *    cache. Without an `integrity` argument the URL is cached by URL as before.
+ *
+ * Either way only a plausible payload is kept (see {@link cacheable}), and an
+ * entry that is not one is evicted the same way as a mismatching one.
  */
 export async function handleImmutableFetch(
   url: unknown,
@@ -178,7 +234,8 @@ export async function handleImmutableFetch(
   } catch {
     throw new Error(`URL not allowed for immutable fetch: ${url}`);
   }
-  if (!inPolicy(parsed, allowlist)) {
+  const policy = policyFor(parsed, allowlist);
+  if (!policy) {
     throw new Error(`URL not allowed for immutable fetch: ${url}`);
   }
   const expected = typeof integrity === "string" ? integrity : undefined;
@@ -187,9 +244,12 @@ export async function handleImmutableFetch(
   if (cache) {
     const hit = await cache.match(url).catch(() => undefined);
     if (hit) {
-      const body = await hit.clone().arrayBuffer();
-      if (await matchesIntegrity(body, expected)) {
-        return serializeResponse(hit);
+      const cached = await serializeResponse(hit);
+      if (
+        cacheable(cached, parsed, policy.serves) &&
+        (await matchesIntegrity(cached.body, expected))
+      ) {
+        return cached;
       }
       // Stale/poisoned entry: drop it and fall through to a fresh fetch.
       await cache.delete(url).catch(() => undefined);
@@ -211,14 +271,18 @@ export async function handleImmutableFetch(
   if (
     res.redirected &&
     res.url !== "" &&
-    !inPolicy(new URL(res.url), allowlist)
+    !policyFor(new URL(res.url), allowlist)
   ) {
     throw new Error(
       `Immutable fetch redirected outside the allowlist: ${res.url}`,
     );
   }
   const result = await serializeResponse(res);
-  if (cache && (await matchesIntegrity(result.body, expected))) {
+  if (
+    cache &&
+    cacheable(result, parsed, policy.serves) &&
+    (await matchesIntegrity(result.body, expected))
+  ) {
     // Only persist verified bytes. A failed put (quota) only costs the entry.
     await cache
       .put(

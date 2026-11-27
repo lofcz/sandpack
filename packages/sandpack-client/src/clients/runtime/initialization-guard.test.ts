@@ -119,4 +119,68 @@ describe("InitializationGuard (R3-353)", () => {
       expect(guard.decide(42)).toBe("refuse");
     });
   });
+
+  describe("boot deadline", () => {
+    it("stops counting a navigation whose page never booted", () => {
+      const guard = new InitializationGuard();
+      const nonce = guard.arm();
+      expect(guard.expire(nonce)).toBe(true);
+      expect(guard.pending).toBe(0);
+      // Already given up on, already booted, or never issued: nothing to report.
+      expect(guard.expire(nonce)).toBe(false);
+      expect(guard.expire("0".repeat(32))).toBe(false);
+      const booted = guard.arm();
+      guard.decide(booted);
+      expect(guard.expire(booted)).toBe(false);
+    });
+
+    it("gives up on the overtaken navigations with it, not on a newer one", () => {
+      const guard = new InitializationGuard();
+      guard.arm();
+      const second = guard.arm();
+      const third = guard.arm();
+      expect(guard.expire(second)).toBe(true);
+      expect(guard.pending).toBe(1);
+      expect(guard.decide(third)).toBe("accept");
+    });
+
+    it("still honours the page when it boots late, once", () => {
+      const guard = new InitializationGuard();
+      const nonce = guard.arm();
+      guard.expire(nonce);
+      expect(guard.decide(nonce)).toBe("accept");
+      expect(guard.isDetached).toBe(false);
+      expect(guard.decide(nonce)).toBe("refuse");
+    });
+
+    it("ignores the late page while a newer navigation is armed, and refuses it after that one booted", () => {
+      const guard = new InitializationGuard();
+      const slow = guard.arm();
+      guard.expire(slow);
+      const next = guard.arm();
+      expect(guard.decide(slow)).toBe("stale");
+      expect(guard.decide(next)).toBe("accept");
+      expect(guard.decide(slow)).toBe("refuse");
+    });
+
+    it("REFUSES a boot without a nonce and a forged one after the deadline", () => {
+      const legacy = new InitializationGuard();
+      legacy.expire(legacy.arm());
+      expect(legacy.consume()).toBe(false);
+
+      const forged = new InitializationGuard();
+      const own = forged.arm();
+      forged.expire(own);
+      expect(forged.decide("0".repeat(32))).toBe("refuse");
+      // Detached for good: the late page gets nothing either.
+      expect(forged.decide(own)).toBe("refuse");
+    });
+
+    it("does not revive a detached guard", () => {
+      const guard = new InitializationGuard();
+      guard.consume();
+      expect(guard.expire(guard.arm())).toBe(false);
+      expect(guard.isDetached).toBe(true);
+    });
+  });
 });

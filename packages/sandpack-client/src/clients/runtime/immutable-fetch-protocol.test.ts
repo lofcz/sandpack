@@ -22,20 +22,34 @@ const sha384 = async (s: string): Promise<string> => {
   return `sha384-${btoa(bin)}`;
 };
 
-/** Minimal in-memory Cache + CacheStorage covering match/put/delete. */
+/**
+ * Minimal in-memory Cache + CacheStorage covering match/put/delete. Like the
+ * real one it gives an entry back with the content type it was stored with.
+ */
 class FakeCache {
   store = new Map<string, ArrayBuffer>();
+  types = new Map<string, string>();
   async match(url: string): Promise<Response | undefined> {
     const b = this.store.get(url);
-    return b === undefined ? undefined : new Response(b.slice(0));
+    if (b === undefined) return undefined;
+    const type = this.types.get(url);
+    return new Response(b.slice(0), {
+      headers: type ? { "content-type": type } : {},
+    });
   }
   async put(url: string, res: Response): Promise<void> {
+    this.types.set(url, res.headers.get("content-type") ?? "");
     this.store.set(url, await res.arrayBuffer());
   }
   async delete(url: string): Promise<boolean> {
+    this.types.delete(url);
     return this.store.delete(url);
   }
 }
+
+/** A `/package/` reply as sandpack-cdn labels it (router/custom_reply.rs). */
+const cdnPayload = (body: string, type = "application/javascript") =>
+  new Response(body, { status: 200, headers: { "content-type": type } });
 
 describe("handleImmutableFetch — integrity-aware caching", () => {
   let cache: FakeCache;
@@ -244,7 +258,7 @@ describe("self-hosted immutable fetch policy", () => {
     (globalThis as any).caches = {
       open: jest.fn().mockResolvedValue(cache),
     };
-    network = jest.fn().mockResolvedValue(new Response("SELF-HOSTED"));
+    network = jest.fn().mockResolvedValue(cdnPayload("SELF-HOSTED"));
     globalThis.fetch = network;
   });
 
@@ -310,7 +324,7 @@ describe("self-hosted immutable fetch policy", () => {
   );
 
   it("allows a redirect within the configured CDN", async () => {
-    const response = new Response("OK");
+    const response = cdnPayload("OK");
     Object.defineProperties(response, {
       redirected: { value: true },
       url: { value: `${prefix}7/other@1.0.0` },
@@ -325,5 +339,95 @@ describe("self-hosted immutable fetch policy", () => {
   it("does not let one client's prefixes authorize another client's cache reads", async () => {
     await handleImmutableFetch(url, undefined, [prefix]);
     await expect(handleImmutableFetch(url)).rejects.toThrow(/not allowed/);
+  });
+});
+
+describe("handleImmutableFetch — only a plausible payload is kept", () => {
+  const prefix = "https://host.example/sandpack-cdn/package/";
+  const packageUrl = `${prefix}7/react@19.1.0`;
+  const scriptUrl = "https://unpkg.com/pkg@1.2.3/dist/index.js";
+  let cache: FakeCache;
+  let network: jest.Mock;
+
+  beforeEach(() => {
+    cache = new FakeCache();
+    (globalThis as any).caches = { open: async () => cache };
+    network = jest.fn();
+    globalThis.fetch = network;
+  });
+
+  const text = (r: { body: ArrayBuffer }) => new TextDecoder().decode(r.body);
+  const page = (status = 200) =>
+    new Response("<!doctype html><title>App</title>", {
+      status,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+
+  it("returns a page served in a package payload's place, but never caches it", async () => {
+    network.mockImplementation(async () => page());
+    const first = await handleImmutableFetch(packageUrl, undefined, [prefix]);
+    expect(first.contentType).toBe("text/html; charset=utf-8");
+    expect(cache.store.size).toBe(0);
+    // Once the CDN answers again, the payload is fetched and kept.
+    network.mockImplementation(async () => cdnPayload("PAYLOAD"));
+    expect(text(await handleImmutableFetch(packageUrl, undefined, [prefix]))).toBe("PAYLOAD");
+    expect(network).toHaveBeenCalledTimes(2);
+    expect(cache.store.has(packageUrl)).toBe(true);
+  });
+
+  it.each([
+    ["a JSON body", () => cdnPayload('{"message":"down"}', "application/json")],
+    ["plain text", () => cdnPayload("upstream unavailable", "text/plain")],
+    ["an empty body", () => cdnPayload("")],
+    ["a partial response", () => new Response("PAY", { status: 206, headers: { "content-type": "application/javascript" } })],
+  ])("does not cache %s for a package URL", async (_name, reply) => {
+    network.mockImplementation(async () => reply());
+    await handleImmutableFetch(packageUrl, undefined, [prefix]);
+    expect(cache.store.size).toBe(0);
+  });
+
+  it.each([
+    "application/javascript",
+    "Application/JavaScript; charset=utf-8",
+    "application/msgpack",
+    "application/x-msgpack",
+    "application/vnd.msgpack",
+  ])("caches a package payload labelled %s", async (type) => {
+    network.mockImplementation(async () => cdnPayload("PAYLOAD", type));
+    await handleImmutableFetch(packageUrl, undefined, [prefix]);
+    expect(cache.store.has(packageUrl)).toBe(true);
+    await handleImmutableFetch(packageUrl, undefined, [prefix]);
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
+  it("evicts a page cached before this check and fetches the payload again", async () => {
+    await cache.put(packageUrl, page());
+    network.mockImplementation(async () => cdnPayload("PAYLOAD"));
+    expect(text(await handleImmutableFetch(packageUrl, undefined, [prefix]))).toBe("PAYLOAD");
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(cache.types.get(packageUrl)).toBe("application/javascript");
+  });
+
+  it("does not cache a page served in a package file's place", async () => {
+    network.mockImplementation(async () => page());
+    await handleImmutableFetch(scriptUrl);
+    expect(cache.store.size).toBe(0);
+  });
+
+  it("caches an HTML file a package really ships, and any other file type", async () => {
+    const htmlUrl = "https://unpkg.com/pkg@1.2.3/dist/Template.HTML";
+    network.mockImplementation(async () => page());
+    await handleImmutableFetch(htmlUrl);
+    expect(cache.store.has(htmlUrl)).toBe(true);
+    for (const [url, type] of [
+      [scriptUrl, "text/javascript; charset=utf-8"],
+      ["https://unpkg.com/pkg@1.2.3/package.json", "application/json"],
+      ["https://unpkg.com/pkg@1.2.3/LICENSE", "text/plain"],
+      ["https://unpkg.com/pkg@1.2.3/dist/empty.css", "text/css"],
+    ]) {
+      network.mockImplementation(async () => cdnPayload(url.endsWith(".css") ? "" : "FILE", type));
+      await handleImmutableFetch(url);
+      expect(cache.store.has(url)).toBe(true);
+    }
   });
 });
