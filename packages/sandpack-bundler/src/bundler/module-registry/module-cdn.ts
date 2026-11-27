@@ -1,7 +1,7 @@
 import { decode as decodeMsgPack } from '@msgpack/msgpack';
 import urlJoin from 'url-join';
 
-import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
+import { fetchDecoded, registerImmutableUrlPrefix } from '../../utils/fetch';
 import { DepMap } from '.';
 
 // Package CDN root — self-hosted only (Priprava `/sandpack-cdn/`). Never a
@@ -80,16 +80,58 @@ function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
 }
 
-/** Keep requests below proxy path-segment limits without splitting dependency resolution. */
-async function fetchPayload(endpoint: 'dep_tree' | 'package', payload: string) {
+// /dep_tree answers only once every cold package of the tree is downloaded and
+// transformed, so one attempt gets longer than the default before it is given up.
+const DEP_TREE_TIMEOUTS = { attemptTimeoutMs: 60_000, totalTimeoutMs: 180_000 };
+
+/**
+ * One CDN reply, decoded. `shaped` says whether the decoded value is the
+ * payload asked for: a reply that does not decode to it (truncated, or a
+ * proxy's page with status 200) is retried and never cached.
+ *
+ * Keeps requests below proxy path-segment limits without splitting dependency resolution.
+ */
+async function fetchPayload<T>(
+  endpoint: 'dep_tree' | 'package',
+  payload: string,
+  subject: string,
+  shaped: (value: unknown) => value is T,
+): Promise<T> {
   const encoded = encodePayload(payload);
   const segment = encodeURIComponent(encoded);
   const long = segment.length > 240;
-  return retryFetch(urlJoin(cdnRoot(), long ? `/${endpoint}` : `/${endpoint}/${segment}`), {
-    ...(long ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: encoded } : {}),
-    maxRetries: 5,
-    retryDelay: 1000,
-  });
+  return fetchDecoded(
+    urlJoin(cdnRoot(), long ? `/${endpoint}` : `/${endpoint}/${segment}`),
+    {
+      ...(long ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: encoded } : {}),
+      ...(endpoint === 'dep_tree' ? DEP_TREE_TIMEOUTS : {}),
+      maxRetries: 5,
+      retryDelay: 1000,
+      subject,
+    },
+    (body) => {
+      const value = decodeMsgPack(body);
+      if (!shaped(value)) throw new TypeError(`not a /${endpoint} payload`);
+      return value;
+    },
+  );
+}
+
+const isManifest = (value: unknown): value is IResolvedDependency[] => Array.isArray(value);
+
+const isModulePart = (value: unknown): value is ICDNModule => {
+  const part = value as Partial<ICDNModule> | null;
+  return (
+    part !== null && typeof part === 'object' && part.f !== null && typeof part.f === 'object' && Array.isArray(part.m)
+  );
+};
+
+/** The packages a /dep_tree request is about, short enough for an error message. */
+function describeDeps(deps: DepMap): string {
+  const names = Object.keys(deps);
+  const shown = names.slice(0, 5).map((name) => `${name}@${deps[name]}`);
+  if (names.length > shown.length) shown.push(`${names.length - shown.length} more`);
+  return `the dependency tree of ${shown.join(', ')}`;
 }
 
 /**
@@ -106,9 +148,7 @@ export async function fetchManifest(
   pins: DepMap = {},
   entries: Record<string, string[]> = {},
 ): Promise<IResolvedDependency[]> {
-  const result = await fetchPayload('dep_tree', JSON.stringify({ deps, pins, entries }));
-  const buffer = await result.arrayBuffer();
-  return decodeMsgPack(buffer) as IResolvedDependency[];
+  return fetchPayload('dep_tree', JSON.stringify({ deps, pins, entries }), describeDeps(deps), isManifest);
 }
 
 export type CDNModuleFileType = ICDNModuleFile | number;
@@ -131,8 +171,8 @@ export interface ICDNModule {
 
 /** One `/package` response: an entry's closure, or the listing (`entry: null`). */
 async function fetchPackagePart(name: string, version: string, entry: string | null): Promise<ICDNModule> {
-  const result = await fetchPayload('package', JSON.stringify({ name, version, entry }));
-  return decodeMsgPack(await result.arrayBuffer()) as ICDNModule;
+  const subject = `${name}@${version} (${entry === null ? 'file listing' : `entry ${entry}`})`;
+  return fetchPayload('package', JSON.stringify({ name, version, entry }), subject, isModulePart);
 }
 
 /** Overlay inlined files onto `into` (a listing entry becomes the inlined file). */

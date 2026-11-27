@@ -2,7 +2,7 @@ import { FileSystem, Inode, type CreationOptions, type InodeLike } from '@zenfs/
 import { withErrno } from 'kerium';
 
 import { ModuleRegistry } from '../bundler/module-registry';
-import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
+import { fetchDecoded, registerImmutableUrlPrefix } from '../utils/fetch';
 import { NPM_FILE_ORIGIN, npmFileUrl } from './npmFileUrl';
 
 // POSIX mode type bits (not re-exported from @zenfs/core's entrypoint, so
@@ -13,16 +13,19 @@ const READ_ONLY_FILE = S_IFREG | 0o444;
 const READ_ONLY_DIR = S_IFDIR | 0o555;
 
 // Files are always requested at an exact version (the registry resolves it), so
-// the responses are immutable and `retryFetch` serves them cache-first from the
+// the responses are immutable and `fetchDecoded` serves them cache-first from the
 // persistent immutable cache — forwarded to the parent in the opaque-origin
 // iframe (PRETRANSPILED_ARTIFACTS_SPEC §3.5). Mirrors `NodeModuleFSLayer`.
 registerImmutableUrlPrefix(NPM_FILE_ORIGIN);
 
 /** Default lazy fetch for a file the CDN bundle lists but does not inline. */
-const defaultFetchFile = async (moduleName: string, moduleVersion: string, relPath: string): Promise<Uint8Array> => {
-  const response = await retryFetch(npmFileUrl(moduleName, moduleVersion, relPath), { maxRetries: 5 });
-  return new Uint8Array(await response.arrayBuffer());
-};
+const defaultFetchFile = (moduleName: string, moduleVersion: string, relPath: string): Promise<Uint8Array> =>
+  // The body is read inside the retried unit, so a connection lost mid-file is retried too.
+  fetchDecoded(
+    npmFileUrl(moduleName, moduleVersion, relPath),
+    { maxRetries: 5, subject: `${moduleName}@${moduleVersion}/${relPath}` },
+    (body) => new Uint8Array(body),
+  );
 
 type FileContent = string | Uint8Array;
 export type RegistryFileFetcher = (moduleName: string, moduleVersion: string, relPath: string) => Promise<FileContent>;
@@ -42,7 +45,7 @@ interface ParsedPath {
  * §3.1, Gate 0): mounted at `/node_modules`, it answers metadata **live** from
  * the registry's per-module file maps (the registry grows as dependencies
  * resolve, so reads must consult it at call time, not a snapshot) and lazily
- * fetches a listed-but-not-inlined file from unpkg through `retryFetch`.
+ * fetches a listed-but-not-inlined file from unpkg through `fetchDecoded`.
  *
  * Every write method throws `EROFS` (explicit rejection — the writable side of
  * the COW mount absorbs writes; a credential/`no_write`-based read-only would

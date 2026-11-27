@@ -1,18 +1,19 @@
 import { encode } from '@msgpack/msgpack';
-import { retryFetch } from '../../utils/fetch';
+import { fetchDecoded } from '../../utils/fetch';
 import { fetchManifest, fetchModule, fetchModuleEntries, setCdnRoot } from './module-cdn';
 
 jest.mock('../../utils/fetch', () => ({
-  retryFetch: jest.fn(),
+  fetchDecoded: jest.fn(),
   registerImmutableUrlPrefix: jest.fn(),
 }));
 
-const fetchMock = retryFetch as jest.Mock;
+const fetchMock = fetchDecoded as jest.Mock;
+type Decode = (body: Uint8Array) => unknown;
 beforeEach(() => {
   fetchMock.mockReset();
-  fetchMock.mockImplementation(async (url: string) => ({
-    arrayBuffer: async () => encode(url.includes('/dep_tree') ? [] : { f: {}, m: [] }),
-  }));
+  fetchMock.mockImplementation(async (url: string, _init: unknown, decode: Decode) =>
+    decode(encode(url.includes('/dep_tree') ? [] : { f: {}, m: [] })),
+  );
   setCdnRoot('https://preview.example/sandpack-cdn/');
 });
 
@@ -46,9 +47,9 @@ it('installs a release as its listing plus one cacheable GET per entry, inlined 
     '.': { f: { 'index.js': { c: 'root', d: ['scheduler'], t: true } }, m: ['scheduler'] },
     './client': { f: { 'client.js': { c: 'client', d: ['./index.js'], t: true } }, m: [] },
   };
-  fetchMock.mockImplementation(async (url: string) => ({
-    arrayBuffer: async () => encode(parts[String(JSON.parse(payload(url).slice(2, -1)).entry)]),
-  }));
+  fetchMock.mockImplementation(async (url: string, _init: unknown, decode: Decode) =>
+    decode(encode(parts[String(JSON.parse(payload(url).slice(2, -1)).entry)])),
+  );
   const module = await fetchModule('react-dom', '19.1.0', ['.', './client']);
   expect(fetchMock.mock.calls.map(([url, init]) => [payload(url, init), init?.method])).toEqual([
     ['7({"name":"react-dom","version":"19.1.0","entry":null})', undefined],
