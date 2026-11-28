@@ -7,18 +7,27 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  */
 
-import { SourceMapConsumer } from 'source-map';
+import {
+  FlattenMap,
+  TraceMap,
+  generatedPositionFor,
+  originalPositionFor,
+  sourceContentFor,
+  type SectionedSourceMap,
+  type SourceMapInput,
+} from '@jridgewell/trace-mapping';
 
 /**
- * A wrapped instance of a <code>{@link https://github.com/mozilla/source-map SourceMapConsumer}</code>.
+ * A wrapped instance of a <code>{@link https://github.com/jridgewell/sourcemaps TraceMap}</code>.
  *
- * This exposes methods which will be indifferent to changes made in <code>{@link https://github.com/mozilla/source-map source-map}</code>.
+ * This exposes methods which will be indifferent to changes made in the source map library.
  */
 export class SourceMap {
-  __source_map: SourceMapConsumer;
+  __source_map: TraceMap;
 
-  constructor(sourceMap: SourceMapConsumer) {
-    this.__source_map = sourceMap;
+  constructor(sourceMap: SourceMapInput | SectionedSourceMap) {
+    this.__source_map =
+      typeof sourceMap === 'object' && 'sections' in sourceMap ? new FlattenMap(sourceMap) : new TraceMap(sourceMap);
   }
 
   /**
@@ -27,15 +36,9 @@ export class SourceMap {
    * @param {number} column The column of the generated code position.
    */
   getOriginalPosition(line: number, column: number): { source: string; line: number; column: number } {
-    const {
-      line: l,
-      column: c,
-      source: s,
-    } = this.__source_map.originalPositionFor({
-      line,
-      column,
-    });
-    return { line: l, column: c, source: s };
+    const { line: l, column: c, source: s } = originalPositionFor(this.__source_map, { line, column });
+    // All three are null where the map has no mapping; callers check `source`.
+    return { line: l as number, column: c as number, source: s as string };
   }
 
   /**
@@ -45,14 +48,10 @@ export class SourceMap {
    * @param {number} column The column of the original code position.
    */
   getGeneratedPosition(source: string, line: number, column: number): { line: number; column: number } {
-    const { line: l, column: c } = this.__source_map.generatedPositionFor({
-      source,
-      line,
-      column,
-    });
+    const { line: l, column: c } = generatedPositionFor(this.__source_map, { source, line, column });
     return {
-      line: l,
-      column: c,
+      line: l as number,
+      column: c as number,
     };
   }
 
@@ -61,12 +60,11 @@ export class SourceMap {
    * @param {string} sourceName The name of the source file.
    */
   getSource(sourceName: string): string {
-    return this.__source_map.sourceContentFor(sourceName);
+    return sourceContentFor(this.__source_map, sourceName) as string;
   }
 
   getSources(): string[] {
-    // @ts-ignore
-    return this.__source_map.sources;
+    return this.__source_map.resolvedSources;
   }
 }
 
@@ -101,14 +99,12 @@ async function getSourceMap(fileUri: string, fileContents: string): Promise<Sour
     }
     sm = sm.substring(match2[0].length);
     sm = window.atob(sm);
-    sm = JSON.parse(sm);
-    // @ts-ignore
-    return new SourceMap(new SourceMapConsumer(sm));
+    return new SourceMap(JSON.parse(sm));
   } else {
     const index = fileUri.lastIndexOf('/');
     const url = fileUri.substring(0, index + 1) + sm;
     const obj = await fetch(url).then((res) => res.json());
-    return new SourceMap(new SourceMapConsumer(obj));
+    return new SourceMap(obj);
   }
 }
 

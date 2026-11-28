@@ -17,7 +17,7 @@ describe('scanLocalImports', () => {
     if (!found) throw new Error(`Cannot find module '${specifier}'`);
     return found;
   };
-  const moduleSpecifiers = jest.fn(async (path: string) => {
+  const moduleSpecifiers = rs.fn(async (path: string) => {
     if (!(path in graph)) throw new Error('ENOENT');
     return graph[path];
   });

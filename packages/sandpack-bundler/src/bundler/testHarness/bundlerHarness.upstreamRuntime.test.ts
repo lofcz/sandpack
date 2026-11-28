@@ -1,15 +1,16 @@
+import type { Mock } from '@rstest/core';
 import { fetchManifest, fetchModule } from '../module-registry/module-cdn';
 import { createBundlerHarness, installEvalGlobals } from './bundlerHarness';
 
-jest.mock('../module-registry/module-cdn', () => ({
-  ...jest.requireActual('../module-registry/module-cdn'),
-  fetchManifest: jest.fn(), fetchModule: jest.fn(),
+rs.mock('../module-registry/module-cdn', () => ({
+  ...rs.requireActual('../module-registry/module-cdn'),
+  fetchManifest: rs.fn(), fetchModule: rs.fn(),
 }));
 
 it('runs upstream import.meta and non-optional root peers through the real transform and evaluator', async () => {
   const restore = installEvalGlobals();
-  (fetchManifest as jest.Mock).mockImplementation(async deps => Object.keys(deps).map(n => ({ n, v: '1.0.0', d: 0 })));
-  (fetchModule as jest.Mock).mockImplementation(async name => ({ f: {
+  (fetchManifest as Mock).mockImplementation(async deps => Object.keys(deps).map(n => ({ n, v: '1.0.0', d: 0 })));
+  (fetchModule as Mock).mockImplementation(async name => ({ f: {
     'package.json': { c: JSON.stringify({ name, main: 'index.js' }), d: [], t: true },
     'index.js': { c: 'module.exports = 42;', d: [], t: true },
   }, m: [] }));

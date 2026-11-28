@@ -1,30 +1,31 @@
 /**
- * @jest-environment node
+ * @rstest-environment node
  *
  * Import-driven installs: the boot install covers only what the app is known to
  * import; a declared package imported later installs through `ensurePackages`,
  * batched into one /dep_tree request that pins everything already installed.
  */
+import type { Mock } from '@rstest/core';
 import { ModuleRegistry } from './index';
 import { fetchManifest, fetchModule, fetchModuleEntries } from './module-cdn';
 
-jest.mock('./module-cdn', () => ({
+rs.mock('./module-cdn', () => ({
   CDN_VERSION: 7,
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
-  fetchModuleEntries: jest.fn(),
-  mergeModuleParts: jest.requireActual('./module-cdn').mergeModuleParts,
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
+  fetchModuleEntries: rs.fn(),
+  mergeModuleParts: rs.requireActual('./module-cdn').mergeModuleParts,
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
-const mockedFetchModuleEntries = fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
+const mockedFetchModuleEntries = fetchModuleEntries as Mock<typeof fetchModuleEntries>;
 
 function stubBundler(): any {
   return {
     modules: new Map(),
-    forgetMissingNodeModules: jest.fn(),
-    fs: { readFileAsync: jest.fn(), readBytesAsync: jest.fn() },
+    forgetMissingNodeModules: rs.fn(),
+    fs: { readFileAsync: rs.fn(), readBytesAsync: rs.fn() },
   };
 }
 

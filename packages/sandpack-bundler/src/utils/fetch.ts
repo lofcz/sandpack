@@ -427,8 +427,6 @@ export async function fetchDecoded<T>(
         return result.value;
       }
 
-      // Don't use p-retry it cannot be scope hoisted properly
-      // See https://github.com/parcel-bundler/parcel/issues/7866
       const { problem } = result;
       const retryable = problem.failure !== 'http' || isRetryableStatus(problem.status);
       const delay = backoffDelay(retryDelay, attempt);

@@ -6,7 +6,7 @@ import type { MessageEndpoint } from '../../utils/WorkerMessageBus';
  * In production the babel worker runs in the PARENT page and hands the iframe a
  * `MessagePort` over a one-time `{ type: 'connect' }` handshake (the iframe has an
  * opaque origin and can't load a same-origin worker). The bundler's
- * `BabelTransformer` then drives that port with `WorkerMessageBus`. Under jest there
+ * `BabelTransformer` then drives that port with `WorkerMessageBus`. In a test there
  * is no worker and no web `MessageChannel`, so we run the REAL `babel-worker` module
  * in-process: polyfill `self`, import the worker (it registers its module-level
  * `onConnect` listener on `self`), then deliver the connect handshake over a

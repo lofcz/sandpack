@@ -1,19 +1,17 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  *
  * SDK integrity verification (SDK_PACKAGING_SPEC §5.2 / SPEC_REVIEW SP-2).
  */
-import { TextEncoder as NodeTextEncoder } from 'node:util';
 import { webcrypto } from 'node:crypto';
 import { sha384, verifyVendoredFiles, pinnedHashesFor, decideIntegrity } from './sdkIntegrity';
 
-// jsdom in this jest setup doesn't expose TextEncoder / crypto.subtle / btoa
-// (the real iframe runtime does). Polyfill from node before any test runs them.
+// jsdom's `crypto` has no `subtle` (the real iframe runtime's does): take Node's
+// before any test hashes with it.
 beforeAll(() => {
-  const g = globalThis as Record<string, unknown>;
-  if (typeof g.TextEncoder === 'undefined') g.TextEncoder = NodeTextEncoder;
-  if (typeof g.crypto === 'undefined') g.crypto = webcrypto;
-  if (typeof g.btoa === 'undefined') g.btoa = (s: string) => Buffer.from(s, 'binary').toString('base64');
+  if (!globalThis.crypto?.subtle) {
+    Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
+  }
 });
 
 describe('sha384', () => {

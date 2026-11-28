@@ -12,7 +12,7 @@ describe('iframe parent message ownership', () => {
 
   beforeEach(() => {
     (globalThis as any).window = {
-      parent: { postMessage: jest.fn() },
+      parent: { postMessage: rs.fn() },
       addEventListener: (_type: string, listener: typeof receive) => { receive = listener; },
     };
     bus = new IFrameParentMessageBus();
@@ -21,7 +21,7 @@ describe('iframe parent message ownership', () => {
   afterEach(() => { (globalThis as any).window = originalWindow; });
 
   it('ignores registration and transferred ports from another window', async () => {
-    const port = { start: jest.fn() };
+    const port = { start: rs.fn() };
     deliver({ type: 'register-frame', id: 'foreign-channel', template: 'foreign' }, {}, [port]);
     expect(port.start).not.toHaveBeenCalled();
 
@@ -33,7 +33,7 @@ describe('iframe parent message ownership', () => {
 
   it('accepts commands only from the actual parent, even when another sender knows the channel id', () => {
     register();
-    const listener = jest.fn();
+    const listener = rs.fn();
     bus.onMessage(listener);
     const command = { type: 'evaluate', codesandbox: true, $id: 'host-channel', command: '1 + 1' };
     for (const source of [{}, window, null]) deliver(command, source);
@@ -44,7 +44,7 @@ describe('iframe parent message ownership', () => {
   });
 
   it('ignores commands before registration and messages for a different host channel', () => {
-    const listener = jest.fn();
+    const listener = rs.fn();
     bus.onMessage(listener);
     const message = { type: 'fs-change', codesandbox: true, $id: 'host-channel', paths: ['/App.tsx'] };
     deliver(message);
@@ -58,9 +58,9 @@ describe('iframe parent message ownership', () => {
 
   it('preserves transferred mount ports on the registered parent channel', () => {
     register();
-    const listener = jest.fn();
+    const listener = rs.fn();
     bus.onMessage(listener);
-    const port = { start: jest.fn() };
+    const port = { start: rs.fn() };
     const message = { type: 'mount-add', codesandbox: true, $id: 'host-channel', path: '/assets' };
     deliver(message, window.parent, [port]);
     expect(listener).toHaveBeenCalledWith({ ...message, ports: [port] });

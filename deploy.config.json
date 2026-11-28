@@ -8,7 +8,7 @@
       "into": "sandpack-bundler",
       "root": "wwwroot",
       "enabled": true,
-      "comment": "Parcel bundler output → static files served at /sandpack-bundler/ (index.html no-cache, hashed chunks immutable)."
+      "comment": "Bundler build output → static files served at /sandpack-bundler/ (index.html no-cache, hashed chunks immutable)."
     },
     {
       "name": "cdn",

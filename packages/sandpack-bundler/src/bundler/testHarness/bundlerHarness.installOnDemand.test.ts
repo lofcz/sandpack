@@ -1,17 +1,18 @@
+import type { Mock } from '@rstest/core';
 import { underAppRoot } from '../../fsLayout';
 import { fetchManifest, fetchModule, fetchModuleEntries } from '../module-registry/module-cdn';
 import { createBundlerHarness, COMPILE_FIXTURE, type BundlerHarness } from './bundlerHarness';
 
-jest.mock('../module-registry/module-cdn', () => ({
-  ...jest.requireActual('../module-registry/module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
-  fetchModuleEntries: jest.fn(),
+rs.mock('../module-registry/module-cdn', () => ({
+  ...rs.requireActual('../module-registry/module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
+  fetchModuleEntries: rs.fn(),
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
-const mockedFetchModuleEntries = fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
+const mockedFetchModuleEntries = fetchModuleEntries as Mock<typeof fetchModuleEntries>;
 
 // Import-driven installs through the real resolver + `/node_modules` mount: an
 // app import of a declared package the boot install did not cover installs it

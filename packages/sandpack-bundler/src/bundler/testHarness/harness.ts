@@ -20,7 +20,7 @@ import { RegistryFileFetcher } from '../../FileSystem/RegistryFS';
  *  - a **fake Port for `/app`**: the plan's "InMemory mount stand-in at `/app`" — a
  *    real in-process ZenFS `InMemory` fs mounted at `/app`, standing in for the
  *    parent-hosted Port-backed mount. (The MessageChannel/`attachFS` loopback is the
- *    other option the plan offers; the stand-in is deterministic under jest, where
+ *    other option the plan offers; the stand-in is deterministic under Node, where
  *    zenfs's web-`Port` handshake has no transport.)
  *  - a **Port-traffic spy**: a recording proxy over that `/app` backend that records
  *    every fs op routed to it, by `(method, path)`. Accessing `/app` is exactly the

@@ -1,25 +1,26 @@
 /**
- * @jest-environment node
+ * @rstest-environment node
  *
  * Every module records the npm release its files come from: an `npm:` alias
  * installs its target's files under the alias, and an esm.sh fallback keeps the
  * assets of the release esm.sh built.
  */
+import type { Mock } from '@rstest/core';
 import { ModuleRegistry } from './index';
 import { fetchManifest, fetchModule } from './module-cdn';
 import { esmBuildVersion, fetchEsmFallbackRelease, synthesizeEsmFallbackModule, type EsmFallbackFetcher } from './esm-fallback';
 import { ICDNModuleFile } from './module-cdn';
 
-jest.mock('./module-cdn', () => ({
+rs.mock('./module-cdn', () => ({
   CDN_VERSION: 5,
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
 
-const stubBundler = (): any => ({ modules: new Map(), fs: { readFileAsync: jest.fn(), readBytesAsync: jest.fn() } });
+const stubBundler = (): any => ({ modules: new Map(), fs: { readFileAsync: rs.fn(), readBytesAsync: rs.fn() } });
 
 describe('npm alias', () => {
   beforeEach(() => {

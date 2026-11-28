@@ -13,9 +13,6 @@ crates/*/target
 **/target
 
 # bundler / build caches
-.parcel-cache
-.parcel-cache-worker
-.parcel-cache-authoring-worker
 .turbo
 
 # test / coverage

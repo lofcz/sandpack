@@ -16,14 +16,14 @@ describe('DocumentMutationWatcher', () => {
   const previous = { MutationObserver: g.MutationObserver, document: g.document };
 
   beforeEach(() => {
-    jest.useFakeTimers();
+    rs.useFakeTimers();
     FakeMutationObserver.live.clear();
     g.MutationObserver = FakeMutationObserver;
     g.document = {};
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    rs.useRealTimers();
     g.MutationObserver = previous.MutationObserver;
     g.document = previous.document;
   });
@@ -39,7 +39,7 @@ describe('DocumentMutationWatcher', () => {
   });
 
   it('reports a burst of mutations once per throttle window', () => {
-    const onMutation = jest.fn();
+    const onMutation = rs.fn();
     const watcher = new DocumentMutationWatcher(onMutation, 300);
     watcher.start();
     watcher.start();
@@ -49,7 +49,7 @@ describe('DocumentMutationWatcher', () => {
     observer.callback();
     expect(onMutation).toHaveBeenCalledTimes(1);
 
-    jest.advanceTimersByTime(300);
+    rs.advanceTimersByTime(300);
     observer.callback();
     expect(onMutation).toHaveBeenCalledTimes(2);
     watcher.stop();

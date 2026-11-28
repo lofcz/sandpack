@@ -34,7 +34,7 @@ function createBus(endpoint: MessageEndpoint, timeoutMs = 30000): WorkerMessageB
 
 describe('WorkerMessageBus', () => {
   afterEach(() => {
-    jest.useRealTimers();
+    rs.useRealTimers();
   });
 
   it('never resolves a request with the response to another bus on the same endpoint', async () => {
@@ -61,7 +61,7 @@ describe('WorkerMessageBus', () => {
   });
 
   it('does not time out requests that wait behind others while the endpoint keeps answering', async () => {
-    jest.useFakeTimers();
+    rs.useFakeTimers();
     const port = fakeEndpoint();
     const bus = createBus(port.endpoint, 30000);
     const results = [bus.request('transform', 1), bus.request('transform', 2), bus.request('transform', 3)];
@@ -70,7 +70,7 @@ describe('WorkerMessageBus', () => {
 
     // A serial worker that needs 20 s per request: the last answer arrives 60 s after posting.
     for (const request of [...port.posted]) {
-      jest.advanceTimersByTime(20000);
+      rs.advanceTimersByTime(20000);
       port.respond(request, 'done');
       await Promise.resolve();
     }
@@ -79,51 +79,51 @@ describe('WorkerMessageBus', () => {
   });
 
   it('fails every unanswered request once the endpoint has been silent for the timeout', async () => {
-    jest.useFakeTimers();
+    rs.useFakeTimers();
     const port = fakeEndpoint();
     const bus = createBus(port.endpoint, 30000);
     const answered = bus.request('transform', 1);
     const silent = [bus.request('transform', 2), bus.request('transform', 3)];
     const failures = silent.map((result) => result.then(() => null, (err: Error) => err.message));
 
-    jest.advanceTimersByTime(10000);
+    rs.advanceTimersByTime(10000);
     port.respond(port.posted[0], 'done');
     await expect(answered).resolves.toBe('done');
 
     // 29 s after the last answer nothing has failed yet.
-    jest.advanceTimersByTime(29000);
+    rs.advanceTimersByTime(29000);
     await Promise.resolve();
-    expect(jest.getTimerCount()).toBe(1);
+    expect(rs.getTimerCount()).toBe(1);
 
-    jest.advanceTimersByTime(1000);
-    jest.runOnlyPendingTimers();
+    rs.advanceTimersByTime(1000);
+    rs.runOnlyPendingTimers();
     expect(await Promise.all(failures)).toEqual([
       'Request on channel test timed out: no response for 30000 ms',
       'Request on channel test timed out: no response for 30000 ms',
     ]);
-    expect(jest.getTimerCount()).toBe(0);
+    expect(rs.getTimerCount()).toBe(0);
   });
 
   it('handles a response that was already queued when the timer fired late', async () => {
-    jest.useFakeTimers();
+    rs.useFakeTimers();
     const port = fakeEndpoint();
     const bus = createBus(port.endpoint, 30000);
     const result = bus.request('transform', 1);
 
-    jest.advanceTimersByTime(30000);
+    rs.advanceTimersByTime(30000);
     // The page was busy: the answer is handled right after the overdue timer.
     port.respond(port.posted[0], 'late but there');
-    jest.runOnlyPendingTimers();
+    rs.runOnlyPendingTimers();
     await expect(result).resolves.toBe('late but there');
   });
 
   it('leaves no timer running once every request is answered', async () => {
-    jest.useFakeTimers();
+    rs.useFakeTimers();
     const port = fakeEndpoint();
     const bus = createBus(port.endpoint);
     const result = bus.request('transform', 1);
     port.respond(port.posted[0], 'done');
     await result;
-    expect(jest.getTimerCount()).toBe(0);
+    expect(rs.getTimerCount()).toBe(0);
   });
 });

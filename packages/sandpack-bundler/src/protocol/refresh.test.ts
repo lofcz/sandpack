@@ -1,14 +1,15 @@
+import type { Mock } from '@rstest/core';
 import { IFrameParentMessageBus } from './iframe';
 
 describe('refresh capability negotiation', () => {
   const originalWindow = globalThis.window;
   let receive: (event: MessageEvent) => void;
-  let reload: jest.Mock;
-  let postMessage: jest.Mock;
+  let reload: Mock;
+  let postMessage: Mock;
 
   beforeEach(() => {
-    reload = jest.fn();
-    postMessage = jest.fn();
+    reload = rs.fn();
+    postMessage = rs.fn();
     (globalThis as any).window = {
       location: { reload },
       parent: { postMessage },

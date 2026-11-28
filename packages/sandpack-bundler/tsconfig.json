@@ -9,12 +9,11 @@
     "sourceMap": true,
     "allowJs": true,
     "lib": ["esnext", "dom"],
-    "rootDir": "src",
+    "types": ["node", "@rstest/core/globals"],
     "moduleResolution": "bundler",
-    "downlevelIteration": true,
     "strictNullChecks": true,
     "skipLibCheck": true
   },
-  "include": ["src"],
+  "include": ["src", "shims", "rsbuild.config.mts", "rstest.config.mts", "rstest.setup.ts"],
   "exclude": ["node_modules", "dist", "fixture"]
 }

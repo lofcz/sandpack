@@ -14,11 +14,9 @@ describe('a source that cannot be read', () => {
     h = await createBundlerHarness();
     await h.bundler.initPreset('create-react-app');
     const realRead = h.bundler.fs.readFileAsync.bind(h.bundler.fs);
-    jest
-      .spyOn(h.bundler.fs, 'readFileAsync')
-      .mockImplementation(async (path: string) =>
-        path === answer ? Promise.reject(new Error('RPC request timed out after 30000 ms')) : realRead(path)
-      );
+    rs.spyOn(h.bundler.fs, 'readFileAsync').mockImplementation(async (path: string) =>
+      path === answer ? Promise.reject(new Error('RPC request timed out after 30000 ms')) : realRead(path)
+    );
   }, 60000);
 
   afterAll(async () => {

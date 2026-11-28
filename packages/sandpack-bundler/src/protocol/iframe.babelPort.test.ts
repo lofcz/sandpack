@@ -1,5 +1,5 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  */
 import { IFrameParentMessageBus } from './iframe';
 
@@ -13,7 +13,7 @@ const registerFrame = (bus: IFrameParentMessageBus, ports: unknown[]) =>
     ports,
   });
 
-const port = () => ({ start: jest.fn() });
+const port = () => ({ start: rs.fn() });
 
 describe('IFrameParentMessageBus Babel port', () => {
   it('hands over the Babel port the handshake transferred', async () => {

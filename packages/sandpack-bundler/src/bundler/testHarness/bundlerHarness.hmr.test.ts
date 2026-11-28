@@ -1,3 +1,4 @@
+import type { Mock } from '@rstest/core';
 import { fs } from '@zenfs/core';
 
 import { underAppRoot } from '../../fsLayout';
@@ -29,11 +30,11 @@ function compiledCodeFor(h: BundlerHarness, needle: string): string | undefined 
 describe('G0-4 [harness] edit/reload behavior over the flipped mount table', () => {
   let h: BundlerHarness;
   let restore: () => void;
-  let reloadSpy: jest.Mock;
+  let reloadSpy: Mock;
 
   beforeAll(async () => {
     restore = installEvalGlobals();
-    reloadSpy = jest.fn();
+    reloadSpy = rs.fn();
     (globalThis as unknown as { location: { reload: () => void } }).location.reload = reloadSpy;
     h = await createBundlerHarness(EVAL_FIXTURE, { forCompile: true });
     const evaluate = await h.bundler.compile(); // first load

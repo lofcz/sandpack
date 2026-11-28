@@ -1,15 +1,16 @@
+import type { Mock } from '@rstest/core';
 import { fetchManifest, fetchModule, fetchModuleEntries } from '../module-registry/module-cdn';
 import { createBundlerHarness, installEvalGlobals, type BundlerHarness } from './bundlerHarness';
 
-jest.mock('../module-registry/module-cdn', () => ({
-  ...jest.requireActual('../module-registry/module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
-  fetchModuleEntries: jest.fn(),
+rs.mock('../module-registry/module-cdn', () => ({
+  ...rs.requireActual('../module-registry/module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
+  fetchModuleEntries: rs.fn(),
 }));
 
-const manifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const download = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const manifest = fetchManifest as Mock<typeof fetchManifest>;
+const download = fetchModule as Mock<typeof fetchModule>;
 const fixture = {
   'package.json': JSON.stringify({ main: 'src/main', dependencies: { state: '1.0.0', renderer: '1.0.0' } }),
   'index.html': '<!doctype html><div id="root"></div>',
@@ -33,7 +34,7 @@ describe('newly installed packages link against the current filesystem', () => {
       },
       m: name === 'renderer' ? ['state'] : [],
     }));
-    (fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>).mockImplementation(
+    (fetchModuleEntries as Mock<typeof fetchModuleEntries>).mockImplementation(
       (name, version, entries) => download(name, version, entries),
     );
     h = await createBundlerHarness(fixture, { forCompile: true });

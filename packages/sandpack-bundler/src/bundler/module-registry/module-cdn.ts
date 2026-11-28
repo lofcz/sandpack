@@ -8,7 +8,7 @@ import { DepMap } from '.';
 // public third-party CDN. Resolution order:
 //  1) {@link setCdnRoot} from the parent `register-frame` handshake (preferred;
 //     opaque-origin iframes cannot reliably derive a host from location)
-//  2) build-time `SANDPACK_CDN_ROOT` (Parcel inlines `process.env.*`)
+//  2) build-time `SANDPACK_CDN_ROOT` (the build defines it: rsbuild.config.mts)
 //  3) sibling of the bundler document URL (`…/sandpack-bundler/` → `…/sandpack-cdn/`)
 
 function normalizeCdnRoot(root: string): string {

@@ -1,12 +1,13 @@
+import type { Mock } from '@rstest/core';
 import { underAppRoot } from '../../fsLayout';
 import { fetchManifest, fetchModule } from '../module-registry/module-cdn';
 import { createBundlerHarness, COMPILE_FIXTURE, type BundlerHarness } from './bundlerHarness';
 
-jest.mock('../module-registry/module-cdn', () => ({
-  ...jest.requireActual('../module-registry/module-cdn'), fetchManifest: jest.fn(), fetchModule: jest.fn(),
+rs.mock('../module-registry/module-cdn', () => ({
+  ...rs.requireActual('../module-registry/module-cdn'), fetchManifest: rs.fn(), fetchModule: rs.fn(),
 }));
-const manifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const moduleFetch = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const manifest = fetchManifest as Mock<typeof fetchManifest>;
+const moduleFetch = fetchModule as Mock<typeof fetchModule>;
 const pkg = (name: string, deps: string[] = []) => ({
   f: {
     'package.json': { c: JSON.stringify({ name, version: '1.0.0', main: 'index.js' }), d: [], t: true },

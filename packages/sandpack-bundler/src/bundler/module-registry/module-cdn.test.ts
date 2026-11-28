@@ -1,13 +1,14 @@
+import type { Mock } from '@rstest/core';
 import { encode } from '@msgpack/msgpack';
 import { fetchDecoded } from '../../utils/fetch';
 import { fetchManifest, fetchModule, fetchModuleEntries, setCdnRoot } from './module-cdn';
 
-jest.mock('../../utils/fetch', () => ({
-  fetchDecoded: jest.fn(),
-  registerImmutableUrlPrefix: jest.fn(),
+rs.mock('../../utils/fetch', () => ({
+  fetchDecoded: rs.fn(),
+  registerImmutableUrlPrefix: rs.fn(),
 }));
 
-const fetchMock = fetchDecoded as jest.Mock;
+const fetchMock = fetchDecoded as Mock;
 type Decode = (body: Uint8Array) => unknown;
 beforeEach(() => {
   fetchMock.mockReset();

@@ -1,3 +1,4 @@
+import type { Mock } from '@rstest/core';
 import { underAppRoot } from '../fsLayout';
 import { fetchManifest, fetchModule, fetchModuleEntries } from '../bundler/module-registry/module-cdn';
 import {
@@ -7,16 +8,16 @@ import {
   type BundlerHarness,
 } from '../bundler/testHarness/bundlerHarness';
 
-jest.mock('../bundler/module-registry/module-cdn', () => ({
-  ...jest.requireActual('../bundler/module-registry/module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
-  fetchModuleEntries: jest.fn(),
+rs.mock('../bundler/module-registry/module-cdn', () => ({
+  ...rs.requireActual('../bundler/module-registry/module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
+  fetchModuleEntries: rs.fn(),
 }));
 
-const manifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const download = fetchModule as jest.MockedFunction<typeof fetchModule>;
-const downloadEntries = fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>;
+const manifest = fetchManifest as Mock<typeof fetchManifest>;
+const download = fetchModule as Mock<typeof fetchModule>;
+const downloadEntries = fetchModuleEntries as Mock<typeof fetchModuleEntries>;
 
 const inlined = (c: string, d: string[] = []) => ({ c, d, t: true });
 

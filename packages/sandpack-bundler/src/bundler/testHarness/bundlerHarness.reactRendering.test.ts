@@ -1,5 +1,7 @@
-/** @jest-environment jsdom */
+/** @rstest-environment jsdom */
+import type { Mock } from '@rstest/core';
 import { readFileSync } from 'fs';
+import events from 'node:events';
 import { join } from 'path';
 import { gunzipSync } from 'zlib';
 import { decode } from '@msgpack/msgpack';
@@ -7,12 +9,18 @@ import { decode } from '@msgpack/msgpack';
 import { fetchManifest, fetchModule, fetchModuleEntries, type ICDNModule } from '../module-registry/module-cdn';
 import { createBundlerHarness, type BundlerHarness } from './bundlerHarness';
 
-jest.mock('../module-registry/module-cdn', () => ({
-  ...jest.requireActual('../module-registry/module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
-  fetchModuleEntries: jest.fn(),
+rs.mock('../module-registry/module-cdn', () => ({
+  ...rs.requireActual('../module-registry/module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
+  fetchModuleEntries: rs.fn(),
 }));
+
+// p-queue lifts Node's listener cap on each queue through node:events, which takes
+// only Node's own EventTarget. Under jsdom a queue extends jsdom's EventTarget,
+// and that one has no Node cap to lift.
+const nodeListenerCap = rs.spyOn(events, 'setMaxListeners').mockImplementation(() => {});
+afterAll(() => nodeListenerCap.mockRestore());
 
 const versions: Record<string, string> = { react: '19.1.0', 'react-dom': '19.1.0', scheduler: '0.26.0' };
 const packages = new Map(Object.entries(versions).map(([name, version]) => [name, decode(gunzipSync(
@@ -46,17 +54,17 @@ async function waitForButton(text: string): Promise<HTMLButtonElement> {
 
 it('boots real CDN React/React DOM, renders, and responds to a state-changing click', async () => {
   document.body.innerHTML = '<div id="root"></div>';
-  (fetchManifest as jest.MockedFunction<typeof fetchManifest>).mockImplementation(async (deps, _pins, entries) =>
+  (fetchManifest as Mock<typeof fetchManifest>).mockImplementation(async (deps, _pins, entries) =>
     Object.keys(deps).map(n => ({ n, v: versions[n] ?? '1.0.0', d: 0, e: entries?.[n] })),
   );
-  (fetchModule as jest.MockedFunction<typeof fetchModule>).mockImplementation(async name => packages.get(name) ?? {
+  (fetchModule as Mock<typeof fetchModule>).mockImplementation(async name => packages.get(name) ?? {
     f: {
       'package.json': { c: JSON.stringify({ name, main: 'index.js' }), d: [], t: true },
       'index.js': { c: 'module.exports = {};', d: [], t: true },
     },
     m: [],
   });
-  (fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>).mockImplementation(
+  (fetchModuleEntries as Mock<typeof fetchModuleEntries>).mockImplementation(
     (name, version, entries) => fetchModule(name, version, entries),
   );
   let h: BundlerHarness | undefined;

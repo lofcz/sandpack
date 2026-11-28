@@ -1,8 +1,9 @@
+import type { Mock } from '@rstest/core';
 import type { FetchError as FetchErrorClass } from '../errors/FetchError';
 import type * as FetchModule from './fetch';
 
 // Backoff waits are asserted on, not waited out.
-jest.mock('./sleep', () => ({ sleep: jest.fn(() => Promise.resolve()) }));
+rs.mock('./sleep', () => ({ sleep: rs.fn(() => Promise.resolve()) }));
 
 type Body = string | Uint8Array | ArrayBuffer | FakeBlob;
 
@@ -47,14 +48,14 @@ class FakeResponse {
   }
 }
 
-const network = jest.fn();
+const network = rs.fn();
 let api: typeof FetchModule;
 let FetchError: typeof FetchErrorClass;
-let sleep: jest.Mock;
+let sleep: Mock;
 
 beforeEach(() => {
   // fetch.ts keeps its prefixes, bridge state and in-flight set at module level.
-  jest.resetModules();
+  rs.resetModules();
   network.mockReset();
   Object.assign(globalThis, { window: { fetch: network }, Response: FakeResponse, Blob: FakeBlob, caches: undefined });
   api = require('./fetch');
@@ -63,8 +64,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  jest.useRealTimers();
-  jest.restoreAllMocks();
+  rs.useRealTimers();
+  rs.restoreAllMocks();
 });
 
 const URL_A = 'https://service.example/dep_tree';
@@ -143,7 +144,7 @@ describe('retry policy', () => {
 
   it('waits exponentially longer between attempts, jittered and capped', async () => {
     network.mockImplementation(async () => new FakeResponse('', { status: 503 }));
-    const random = jest.spyOn(Math, 'random').mockReturnValue(0);
+    const random = rs.spyOn(Math, 'random').mockReturnValue(0);
     await failure(api.retryFetch(URL_A, { maxRetries: 5, retryDelay: 1000 }));
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([500, 1000, 2000, 4000, 4000]);
 
@@ -156,7 +157,7 @@ describe('retry policy', () => {
 
   it('stops at the total bound even with retries left', async () => {
     network.mockImplementation(async () => new FakeResponse('', { status: 503 }));
-    jest.spyOn(Math, 'random').mockReturnValue(0);
+    rs.spyOn(Math, 'random').mockReturnValue(0);
     // Waits of 500 and 1000 fit into 2000 ms; the third (2000) would not.
     const error = await failure(api.retryFetch(URL_A, { maxRetries: 5, retryDelay: 1000, totalTimeoutMs: 2000 }));
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([500, 1000]);
@@ -248,14 +249,14 @@ describe('errors', () => {
 describe('immutable cache', () => {
   const PREFIX = 'https://cdn.example/package/';
   let entries: Map<string, FakeResponse>;
-  let cache: { match: jest.Mock; put: jest.Mock; delete: jest.Mock };
+  let cache: { match: Mock; put: Mock; delete: Mock };
 
   beforeEach(() => {
     entries = new Map();
     cache = {
-      match: jest.fn(async (url: string) => entries.get(url)),
-      put: jest.fn(async (url: string, response: FakeResponse) => void entries.set(url, response)),
-      delete: jest.fn(async (url: string) => entries.delete(url)),
+      match: rs.fn(async (url: string) => entries.get(url)),
+      put: rs.fn(async (url: string, response: FakeResponse) => void entries.set(url, response)),
+      delete: rs.fn(async (url: string) => entries.delete(url)),
     };
     Object.assign(globalThis, { caches: { open: async () => cache } });
     api.registerImmutableUrlPrefix(PREFIX);
@@ -302,7 +303,7 @@ describe('immutable cache', () => {
 
 describe('parent bridge', () => {
   const PREFIX = 'https://cdn.example/package/';
-  let parent: jest.Mock;
+  let parent: Mock;
 
   const bridged = (body: string, status = 200) => ({
     status,
@@ -319,9 +320,9 @@ describe('parent bridge', () => {
     (await api.retryFetch(url, init)).text();
 
   beforeEach(() => {
-    jest.useFakeTimers('modern');
+    rs.useFakeTimers();
     api.registerImmutableUrlPrefix(PREFIX);
-    parent = jest.fn();
+    parent = rs.fn();
     api.registerParentImmutableFetch(parent);
     network.mockImplementation(async (url: string) => new FakeResponse('direct ' + url.slice(PREFIX.length)));
   });
@@ -334,7 +335,7 @@ describe('parent bridge', () => {
     });
     const a = readDirect(PREFIX + 'a');
     await flush();
-    jest.advanceTimersByTime(10_000);
+    rs.advanceTimersByTime(10_000);
     await flush();
     resolveSlow(bridged('cached a'));
     expect(await a).toBe('cached a');
@@ -346,7 +347,7 @@ describe('parent bridge', () => {
     parentServing({ [PREFIX + 'a']: never, [PREFIX + 'b']: async () => bridged('cached b') });
     const a = readDirect(PREFIX + 'a', { attemptTimeoutMs: 5000 });
     await flush();
-    jest.advanceTimersByTime(5000);
+    rs.advanceTimersByTime(5000);
     await flush();
     expect(await a).toBe('direct a');
     expect(await readDirect(PREFIX + 'b')).toBe('cached b');
@@ -379,7 +380,7 @@ describe('parent bridge', () => {
     const first = [readDirect(PREFIX + 'a'), readDirect(PREFIX + 'b')];
     await flush();
     expect(network).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(3000);
+    rs.advanceTimersByTime(3000);
     expect(await Promise.all(first)).toEqual(['direct a', 'direct b']);
 
     parent.mockClear();
@@ -394,7 +395,7 @@ describe('parent bridge', () => {
     );
     const a = readDirect(PREFIX + 'a');
     await flush();
-    jest.advanceTimersByTime(3000);
+    rs.advanceTimersByTime(3000);
     expect(await a).toBe('direct a');
 
     resolveLate(bridged('cached a'));
@@ -407,10 +408,10 @@ describe('parent bridge', () => {
 
 describe('onSlowRequests', () => {
   const pendingReplies: Array<(response: FakeResponse) => void> = [];
-  const listener = jest.fn();
+  const listener = rs.fn();
 
   beforeEach(() => {
-    jest.useFakeTimers('modern');
+    rs.useFakeTimers();
     pendingReplies.length = 0;
     listener.mockReset();
     network.mockImplementation(() => new Promise((resolve) => pendingReplies.push(resolve)));
@@ -418,24 +419,24 @@ describe('onSlowRequests', () => {
 
   it('reports what is still being waited on every interval, and stops when nothing is', async () => {
     api.onSlowRequests(listener, 3000);
-    expect(jest.getTimerCount()).toBe(0);
+    expect(rs.getTimerCount()).toBe(0);
 
     const a = api.retryFetch('https://cdn.example/a', { subject: 'pkg-a@1.0.0' });
-    jest.advanceTimersByTime(2999);
+    rs.advanceTimersByTime(2999);
     expect(listener).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(1);
+    rs.advanceTimersByTime(1);
     expect(listener.mock.calls).toEqual([
       [[{ url: 'https://cdn.example/a', subject: 'pkg-a@1.0.0', elapsedMs: 3000 }]],
     ]);
 
-    jest.advanceTimersByTime(1000);
+    rs.advanceTimersByTime(1000);
     const b = api.retryFetch('https://cdn.example/b');
-    jest.advanceTimersByTime(2000);
+    rs.advanceTimersByTime(2000);
     // b has been in flight for 2 s only.
     expect(listener.mock.calls[1]).toEqual([
       [{ url: 'https://cdn.example/a', subject: 'pkg-a@1.0.0', elapsedMs: 6000 }],
     ]);
-    jest.advanceTimersByTime(3000);
+    rs.advanceTimersByTime(3000);
     expect(
       listener.mock.calls[2][0].map((request: FetchModule.SlowRequest) => [request.url, request.elapsedMs]),
     ).toEqual([
@@ -445,15 +446,15 @@ describe('onSlowRequests', () => {
 
     pendingReplies[0](new FakeResponse('a'));
     await a;
-    jest.advanceTimersByTime(3000);
+    rs.advanceTimersByTime(3000);
     expect(listener.mock.calls[3][0].map((request: FetchModule.SlowRequest) => request.url)).toEqual([
       'https://cdn.example/b',
     ]);
 
     pendingReplies[1](new FakeResponse('b'));
     await b;
-    expect(jest.getTimerCount()).toBe(0);
-    jest.advanceTimersByTime(60_000);
+    expect(rs.getTimerCount()).toBe(0);
+    rs.advanceTimersByTime(60_000);
     expect(listener).toHaveBeenCalledTimes(4);
   });
 
@@ -461,12 +462,12 @@ describe('onSlowRequests', () => {
     api.onSlowRequests(listener, 3000);
     for (let i = 0; i < 3; i++) {
       const request = api.retryFetch('https://cdn.example/quick');
-      jest.advanceTimersByTime(2000);
+      rs.advanceTimersByTime(2000);
       pendingReplies[i](new FakeResponse('quick'));
       await request;
-      expect(jest.getTimerCount()).toBe(0);
+      expect(rs.getTimerCount()).toBe(0);
     }
-    jest.advanceTimersByTime(60_000);
+    rs.advanceTimersByTime(60_000);
     expect(listener).not.toHaveBeenCalled();
   });
 
@@ -477,23 +478,23 @@ describe('onSlowRequests', () => {
     const request = api
       .retryFetch('https://cdn.example/a', { maxRetries: 1, retryDelay: 0, attemptTimeoutMs: 2000 })
       .catch(() => undefined);
-    jest.advanceTimersByTime(2000);
+    rs.advanceTimersByTime(2000);
     await flush();
     expect(network).toHaveBeenCalledTimes(2);
-    jest.advanceTimersByTime(1000);
+    rs.advanceTimersByTime(1000);
     expect(listener).toHaveBeenCalledWith([{ url: 'https://cdn.example/a', subject: undefined, elapsedMs: 3000 }]);
-    jest.advanceTimersByTime(1000);
+    rs.advanceTimersByTime(1000);
     await request;
-    expect(jest.getTimerCount()).toBe(0);
+    expect(rs.getTimerCount()).toBe(0);
   });
 
   it('stops reporting to a listener that unsubscribed', async () => {
     const unsubscribe = api.onSlowRequests(listener, 3000);
     const request = api.retryFetch('https://cdn.example/a');
-    jest.advanceTimersByTime(3000);
+    rs.advanceTimersByTime(3000);
     expect(listener).toHaveBeenCalledTimes(1);
     unsubscribe();
-    jest.advanceTimersByTime(9000);
+    rs.advanceTimersByTime(9000);
     expect(listener).toHaveBeenCalledTimes(1);
     pendingReplies[0](new FakeResponse('a'));
     await request;

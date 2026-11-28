@@ -1,17 +1,18 @@
+import type { Mock, MockInstance } from '@rstest/core';
 import { fs, mounts } from '@zenfs/core';
 
 import { fetchManifest, fetchModule, fetchModuleEntries, type ICDNModule } from '../module-registry/module-cdn';
 import { createBundlerHarness, installEvalGlobals, type BundlerHarness } from './bundlerHarness';
 
-jest.mock('../module-registry/module-cdn', () => ({
-  ...jest.requireActual('../module-registry/module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
-  fetchModuleEntries: jest.fn(),
+rs.mock('../module-registry/module-cdn', () => ({
+  ...rs.requireActual('../module-registry/module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
+  fetchModuleEntries: rs.fn(),
 }));
 
-const manifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const download = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const manifest = fetchManifest as Mock<typeof fetchManifest>;
+const download = fetchModule as Mock<typeof fetchModule>;
 
 /** A CDN package: its package.json fields, the files it inlines, the packages its code uses. */
 interface Package {
@@ -126,12 +127,12 @@ try { load('./nowhere'); } catch (error) { message = (error as Error).message; }
 export default { message, builtin: load('node:worker_threads') };
 `;
 
-jest.setTimeout(30000);
+rs.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 describe('what a module sees when it runs', () => {
   let h: BundlerHarness;
   let restore: () => void;
-  let silenced: jest.SpyInstance[] = [];
+  let silenced: MockInstance[] = [];
   let env: Record<string, any>;
   // Every /dep_tree request of the build: [deps, entries].
   let requests: Array<[Record<string, string>, Record<string, string[]> | undefined]>;
@@ -140,7 +141,7 @@ describe('what a module sees when it runs', () => {
   beforeAll(async () => {
     restore = installEvalGlobals();
     silenced = (['log', 'info', 'warn', 'error', 'groupCollapsed'] as const).map((method) =>
-      jest.spyOn(console, method).mockImplementation(() => {}),
+      rs.spyOn(console, method).mockImplementation(() => {}),
     );
     manifest.mockImplementation(async (deps, _pins, entries) =>
       Object.keys(deps)
@@ -155,7 +156,7 @@ describe('what a module sees when it runs', () => {
         m: found.uses ?? [],
       };
     });
-    (fetchModuleEntries as jest.MockedFunction<typeof fetchModuleEntries>).mockImplementation((name, version, entries) =>
+    (fetchModuleEntries as Mock<typeof fetchModuleEntries>).mockImplementation((name, version, entries) =>
       download(name, version, entries),
     );
     const declared = Object.fromEntries(

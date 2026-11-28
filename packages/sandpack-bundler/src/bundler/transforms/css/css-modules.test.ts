@@ -1,5 +1,5 @@
-jest.mock('url:lightningcss-wasm/lightningcss_node.wasm', () => ({ __esModule: true, default: 'https://fixture.test/lightningcss.wasm' }), { virtual: true });
-jest.mock('lightningcss-wasm', () => ({ __esModule: true, default: jest.fn(async () => undefined), bundleAsync: jest.fn() }));
+import type { Mock } from '@rstest/core';
+rs.mock('lightningcss-wasm', () => ({ __esModule: true, default: rs.fn(async () => undefined), bundleAsync: rs.fn() }));
 
 import { bundleAsync } from 'lightningcss-wasm';
 
@@ -7,7 +7,7 @@ import { createBundlerHarness, installEvalGlobals } from '../../testHarness/bund
 
 // What lightningcss returns for a CSS module (shape checked against lightningcss-wasm 1.33):
 // the stylesheet with its class names renamed, and the map of the names.
-const engine = (bundleAsync as jest.Mock).mockImplementation(async ({ filename, cssModules }) => {
+const engine = (bundleAsync as Mock).mockImplementation(async ({ filename, cssModules }) => {
   const css = cssModules ? '.h4sh_box { color: red } .h4sh_base { margin: 0 }' : '.box { color: red }';
   return {
     code: new TextEncoder().encode(css),
@@ -26,7 +26,7 @@ it('exports the class names of a *.module.css import, and nothing from a plain s
   const inserted: string[] = [];
   (globalThis as any).document.createTextNode = (text: string) => (inserted.push(text), {});
   const silenced = (['log', 'info', 'warn', 'error', 'groupCollapsed'] as const).map((method) =>
-    jest.spyOn(console, method).mockImplementation(() => {}),
+    rs.spyOn(console, method).mockImplementation(() => {}),
   );
   const h = await createBundlerHarness(
     {

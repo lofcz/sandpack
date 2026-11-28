@@ -1,5 +1,5 @@
 import gensync from 'gensync';
-import micromatch from 'micromatch';
+import picomatch from 'picomatch';
 
 import { ModuleNotFoundError } from '../errors/ModuleNotFound';
 import { APP_ROOT } from '../fsLayout';
@@ -125,7 +125,8 @@ function resolveAlias(pkgJson: IFoundPackageJSON, filename: string): string {
         continue;
       }
 
-      const re = micromatch.makeRe(aliasKey, { capture: true });
+      // Module paths are POSIX paths whatever the browser runs on.
+      const re = picomatch.makeRe(aliasKey, { capture: true, windows: false });
       if (re.test(relativeFilepath)) {
         const val = aliases[aliasKey];
         aliasedPath = relativeFilepath.replace(re, val);

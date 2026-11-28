@@ -16,9 +16,10 @@
     "deploy": "node scripts/deploy.mjs",
     "build-and-deploy": "bun run build && bun run deploy",
     "typecheck": "npm --prefix packages/sandpack-client run typecheck && npm --prefix packages/transpiler run typecheck && npm --prefix packages/sandpack-bundler run typecheck",
-    "test": "npm --prefix packages/sandpack-client run test && npm --prefix packages/sandpack-bundler run test && npm --prefix packages/transpiler run test"
+    "test": "npm --prefix packages/sandpack-client run test && npm --prefix packages/sandpack-bundler run test && npm --prefix packages/transpiler run test && npm --prefix packages/transpiler run test:worker",
+    "lint": "npm --prefix packages/sandpack-client run lint && npm --prefix packages/transpiler run lint && npm --prefix packages/sandpack-bundler run lint"
   },
   "devDependencies": {
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   }
 }

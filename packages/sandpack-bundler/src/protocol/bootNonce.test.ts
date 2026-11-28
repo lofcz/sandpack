@@ -5,7 +5,7 @@ function fakeWindow(href: string) {
     location: { href },
     history: {
       state: { kept: true },
-      replaceState: jest.fn((_state: unknown, _title: string, url: string) => {
+      replaceState: rs.fn((_state: unknown, _title: string, url: string) => {
         win.location.href = url;
       }),
     },

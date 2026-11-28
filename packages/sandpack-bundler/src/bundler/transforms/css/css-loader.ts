@@ -1,10 +1,5 @@
 import initLightningcss, { bundleAsync, type CSSModuleExports } from 'lightningcss-wasm';
 import { analyzeCss, type CssAnalysis } from '@lofcz/transpiler/css';
-// Parcel `url:` → fetchable asset URL (string). Do NOT import the .wasm as an
-// ES module: Sandpack's opaque-origin iframe + import maps then hit the host
-// SPA HTML fallback ("MIME type of text/html").
-// @ts-expect-error Parcel url: scheme resolves to a string URL at build time.
-import lightningcssWasmUrl from 'url:lightningcss-wasm/lightningcss_node.wasm';
 
 import { CompilationError } from '../../../errors/CompilationError';
 import { extractModuleSpecifierParts, isModuleSpecifier } from '../../../resolver/utils/module-specifier';
@@ -17,12 +12,11 @@ let initPromise: Promise<void> | null = null;
 
 function ensureLightningcss(): Promise<void> {
   if (!initPromise) {
-    // Pass an absolute URL so lightningcss-wasm uses fetch/instantiateStreaming
-    // instead of a module-script import of the .wasm file.
-    const wasmUrl =
-      typeof lightningcssWasmUrl === 'string' && /^(https?:|blob:|data:)/i.test(lightningcssWasmUrl)
-        ? lightningcssWasmUrl
-        : new URL(String(lightningcssWasmUrl), self.location.href).href;
+    // The build emits the .wasm as a file of its own and puts that file's URL
+    // here; lightningcss-wasm then fetches and compiles it. Do NOT import the
+    // .wasm as an ES module: from Sandpack's opaque-origin iframe that request
+    // hits the host's SPA HTML fallback ("MIME type of text/html").
+    const wasmUrl = new URL('lightningcss-wasm/lightningcss_node.wasm', import.meta.url).href;
     initPromise = initLightningcss(wasmUrl).catch(error => {
       initPromise = null;
       throw error;

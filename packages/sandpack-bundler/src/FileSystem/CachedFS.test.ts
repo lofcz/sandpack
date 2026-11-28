@@ -1,3 +1,4 @@
+import type { Mock } from '@rstest/core';
 import type { BoundContext } from '@zenfs/core';
 
 import { CachedFS, CachedFSChangeEvent } from './CachedFS';
@@ -33,19 +34,19 @@ function controllableWatch() {
 }
 
 function makeContext(opts?: {
-  readFile?: jest.Mock;
-  stat?: jest.Mock;
+  readFile?: Mock;
+  stat?: Mock;
   watch?: () => AsyncIterable<{ filename: string; eventType: string }>;
-  writeFile?: jest.Mock;
-  mkdir?: jest.Mock;
+  writeFile?: Mock;
+  mkdir?: Mock;
 }) {
-  const readFile = opts?.readFile ?? jest.fn(async () => 'CONTENT');
-  const stat = opts?.stat ?? jest.fn(async () => ({ isFile: () => true }));
+  const readFile = opts?.readFile ?? rs.fn(async () => 'CONTENT');
+  const stat = opts?.stat ?? rs.fn(async () => ({ isFile: () => true }));
   const watch = opts?.watch ?? (() => controllableWatch().iterable);
   // writeFile now writes THROUGH to the bound context (mkdir -p + writeFile), so the
   // fake context needs both — see CachedFS.writeFile.
-  const writeFile = opts?.writeFile ?? jest.fn(async () => undefined);
-  const mkdir = opts?.mkdir ?? jest.fn(async () => undefined);
+  const writeFile = opts?.writeFile ?? rs.fn(async () => undefined);
+  const mkdir = opts?.mkdir ?? rs.fn(async () => undefined);
   const context = { fs: { promises: { readFile, stat, watch, writeFile, mkdir } } } as unknown as BoundContext;
   return { context, readFile, stat, writeFile, mkdir };
 }
@@ -65,7 +66,7 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
   });
 
   it('memoizes a not-found: repeated reads of a missing file throw without re-hitting the backend', async () => {
-    const readFile = jest.fn(async () => {
+    const readFile = rs.fn(async () => {
       // A genuine filesystem not-found carries `code: 'ENOENT'` (kerium/zenfs errno);
       // only such errors are negatively memoized (a transient error must not poison).
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
@@ -83,7 +84,7 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     // Reproduces the R3-49d failure mode: a zenfs detached-ArrayBuffer TypeError under
     // concurrent reads must not permanently mark an existing file as missing.
     let calls = 0;
-    const readFile = jest.fn(async () => {
+    const readFile = rs.fn(async () => {
       calls++;
       if (calls === 1) throw new TypeError('Cannot perform Construct on a detached ArrayBuffer');
       return 'RECOVERED';
@@ -99,7 +100,7 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
 
   it('dedupes concurrent reads of the same path into one backend round-trip', async () => {
     let resolveRead: ((v: string) => void) | null = null;
-    const readFile = jest.fn(() => new Promise<string>((res) => { resolveRead = res; }));
+    const readFile = rs.fn(() => new Promise<string>((res) => { resolveRead = res; }));
     const { context } = makeContext({ readFile });
     const fs = new CachedFS(context);
 
@@ -191,7 +192,7 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
   });
 
   it('isFileAsync memoizes stat and treats a cached read as a known file', async () => {
-    const stat = jest.fn(async () => ({ isFile: () => true }));
+    const stat = rs.fn(async () => ({ isFile: () => true }));
     const { context, readFile } = makeContext({ stat });
     const fs = new CachedFS(context);
 
@@ -254,7 +255,7 @@ describe('CachedFS — batch hydration (R3-49b)', () => {
   });
 
   it('invalidates a hydrated entry on markChanged — the next read crosses the Port', async () => {
-    const readFile = jest.fn(async () => 'EDITED');
+    const readFile = rs.fn(async () => 'EDITED');
     const { context } = makeContext({ readFile });
     const fs = new CachedFS(context);
 
@@ -268,7 +269,7 @@ describe('CachedFS — batch hydration (R3-49b)', () => {
   });
 
   it('invalidates a hydrated binary entry on markChanged', async () => {
-    const readFile = jest.fn(async () => new Uint8Array([9]));
+    const readFile = rs.fn(async () => new Uint8Array([9]));
     const { context } = makeContext({ readFile });
     const fs = new CachedFS(context);
 

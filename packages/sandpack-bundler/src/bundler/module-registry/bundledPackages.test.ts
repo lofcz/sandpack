@@ -1,11 +1,12 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  *
  * R3-49a consume side: the ModuleRegistry reads zip-bundled `/package/` content from
  * the mounted FS instead of fetching the CDN, and falls back to a live fetch when a
  * package isn't bundled / the bundle is absent or corrupt. (jsdom: importing
  * ModuleRegistry transitively loads the evaluation runtime, which touches `window`.)
  */
+import type { Mock } from '@rstest/core';
 import { encode as encodeMsgPack } from '@msgpack/msgpack';
 
 import { ModuleRegistry } from '.';
@@ -13,13 +14,13 @@ import { Bundler } from '../bundler';
 import { fetchModule } from './module-cdn';
 import { parseBundledIndex, decodeBundledModule } from './bundledPackages';
 
-jest.mock('./module-cdn', () => ({
-  ...jest.requireActual('./module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
+rs.mock('./module-cdn', () => ({
+  ...rs.requireActual('./module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
 }));
 
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
 
 const MODULE = { f: { 'index.js': { c: 'module.exports = "bundled"', d: [], t: false } }, m: [] };
 const CDN_MODULE = { f: { 'index.js': { c: 'module.exports = "cdn"', d: [], t: false } }, m: [] };

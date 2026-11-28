@@ -5,8 +5,8 @@ describe('BabelTransformer', () => {
   it('drives one port with one message bus, however often it is initialized', async () => {
     const listeners: string[] = [];
     const port = {
-      start: jest.fn(),
-      postMessage: jest.fn(),
+      start: rs.fn(),
+      postMessage: rs.fn(),
       addEventListener: (type: string) => listeners.push(type),
       removeEventListener: () => {},
     };
@@ -23,8 +23,8 @@ describe('BabelTransformer', () => {
 
   it('fails the files waiting for a worker the host reports dead', async () => {
     const port = {
-      start: jest.fn(),
-      postMessage: jest.fn(),
+      start: rs.fn(),
+      postMessage: rs.fn(),
       addEventListener: () => {},
       removeEventListener: () => {},
     };

@@ -1,10 +1,4 @@
-// Adapt only browser asset loading for Node; run the real CSS loader and WASM resolver.
-jest.mock('url:lightningcss-wasm/lightningcss_node.wasm', () => ({ __esModule: true, default: 'https://fixture.test/lightningcss.wasm' }), { virtual: true });
-jest.mock('lightningcss-wasm', () => {
-  const { dirname, join } = require('path');
-  return jest.requireActual(join(dirname(require.resolve('lightningcss-wasm')), 'wasm-node.cjs'));
-});
-
+// Runs the real CSS loader and WASM resolver: under Node, lightningcss-wasm resolves to its Node build.
 import { CSSTransformer } from './index';
 import { StyleTransformer } from '../style';
 import { cssNeedsTailwind } from '@lofcz/transpiler/css';
@@ -17,7 +11,7 @@ it.each([
 ])('compiles framework styles through the installed browser runtime: %s', async (source) => {
   const ctx = { module: { id: 'styles', filepath: '/app/styles.css' }, code: source } as ITranspilationContext;
   const css = new CSSTransformer();
-  const loader = jest.spyOn(css, 'getLoader');
+  const loader = rs.spyOn(css, 'getLoader');
   const result = await css.transform(ctx, {});
   expect(result).not.toBeInstanceOf(Error);
   if (result instanceof Error) throw result;
@@ -45,7 +39,7 @@ it('keeps remote fonts and embedded images browser-native without loading CSS WA
   const source = '@import url("https://fonts.googleapis.com/css2?family=Inter");\n.logo{background:url("data:image/svg+xml,<svg/>")}';
   const ctx = { module: { id: 'fonts', filepath: '/app/styles.css' }, code: source } as ITranspilationContext;
   const css = new CSSTransformer();
-  const loader = jest.spyOn(css, 'getLoader');
+  const loader = rs.spyOn(css, 'getLoader');
   const result = await css.transform(ctx, {});
   if (result instanceof Error) throw result;
   expect(loader).not.toHaveBeenCalled();
@@ -67,7 +61,7 @@ it('does not load the CSS resolver or compiler for directive examples in strings
   const source = '/* url(example) */ a::after { content: \'@import "tailwindcss"; @apply p-4;\'; }';
   const ctx = { module: { id: 'literal', filepath: '/literal.css' }, code: source } as ITranspilationContext;
   const css = new CSSTransformer();
-  const loader = jest.spyOn(css, 'getLoader');
+  const loader = rs.spyOn(css, 'getLoader');
   const result = await css.transform(ctx, {});
   if (result instanceof Error) throw result;
   expect(result.code).toBe(source);
@@ -99,7 +93,7 @@ it.each([
   '@import "tailwindcss"; .label { @apply p-4; }',
   '.label { @apply p-4; }',
 ])('discovers compiler syntax in imported CSS: %s', async (imported) => {
-  const resolve = jest.fn(async () => '/theme.css');
+  const resolve = rs.fn(async () => '/theme.css');
   const ctx = {
     code: '@import "./theme.css";',
     module: { id: 'entry', filepath: '/styles.css', bundler: {

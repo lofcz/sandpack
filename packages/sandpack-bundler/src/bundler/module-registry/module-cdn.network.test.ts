@@ -4,10 +4,10 @@ import { FetchError } from '../../errors/FetchError';
 import { fetchManifest, fetchModuleEntries, setCdnRoot } from './module-cdn';
 
 // Backoff waits are not what these tests are about.
-jest.mock('../../utils/sleep', () => ({ sleep: () => Promise.resolve() }));
+rs.mock('../../utils/sleep', () => ({ sleep: () => Promise.resolve() }));
 
 const ROOT = 'https://preview.example/sandpack-cdn/';
-const network = jest.fn();
+const network = rs.fn();
 
 /** The parts of a Response the fetch layer reads. */
 const reply = (body: Uint8Array | string, status = 200) => {
@@ -70,9 +70,9 @@ it.each([
 
 it('never stores a page served in a package’s place', async () => {
   const cache = {
-    match: jest.fn(async () => undefined),
-    put: jest.fn(async () => undefined),
-    delete: jest.fn(async () => true),
+    match: rs.fn(async () => undefined),
+    put: rs.fn(async () => undefined),
+    delete: rs.fn(async () => true),
   };
   Object.assign(globalThis, { caches: { open: async () => cache } });
   network.mockImplementation(async () => reply(page));

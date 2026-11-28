@@ -99,8 +99,9 @@ jobs:
           git commit -m "chore(${{ github.event.inputs.package }}): release v${{ steps.version.outputs.version }}"
           git tag -a "${{ github.event.inputs.package }}-v${{ steps.version.outputs.version }}" -m "Release ${{ env.PKG_NAME }} v${{ steps.version.outputs.version }}"
 
-      # `prepublishOnly` runs build (+ build:worker for the transpiler) so the
-      # published tarball always carries fresh dist/ and worker/ output.
+      # `prepublishOnly` runs the build (for the transpiler it makes dist/ and
+      # worker/; for the client it also builds the preview runtime into
+      # sandpack/), so the published tarball always carries fresh output.
       - name: Publish to npm
         working-directory: ${{ env.PKG_DIR }}
         run: npm publish --provenance --access public --workspaces=false

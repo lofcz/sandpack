@@ -4,7 +4,7 @@ import { createBabelLoopback, type BabelLoopback } from './babelLoopback';
 
 // Drive the in-process babel loopback exactly as the bundler's `BabelTransformer`
 // does — a `WorkerMessageBus` over the returned port, requesting `transform`. Proves
-// the harness can transpile real TS/TSX in jest (the missing piece for the
+// the harness can transpile real TS/TSX under Node (the missing piece for the
 // `bundler.compile()` smoke), through the REAL `babel-worker` + `@babel/standalone`.
 describe('G0-0 babel loopback (in-process babel worker)', () => {
   let loopback: BabelLoopback;

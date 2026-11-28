@@ -4,10 +4,10 @@ import { FetchError } from '../errors/FetchError';
 import { RegistryFS } from './RegistryFS';
 
 // Backoff waits are not what these tests are about.
-jest.mock('../utils/sleep', () => ({ sleep: () => Promise.resolve() }));
+rs.mock('../utils/sleep', () => ({ sleep: () => Promise.resolve() }));
 
 const FILE_URL = 'https://unpkg.com/react@18.3.1/cjs/react.production.js';
-const network = jest.fn();
+const network = rs.fn();
 
 /** The parts of a Response the fetch layer reads. */
 const reply = (body: string, status = 200) => ({

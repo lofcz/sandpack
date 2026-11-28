@@ -27,9 +27,9 @@ const typesSince = (index: number) => posted.slice(index).map((message) => messa
 let instance: Record<string, any>;
 
 beforeAll(() => {
-  jest.spyOn(console, 'error').mockImplementation(() => {});
-  jest.spyOn(console, 'log').mockImplementation(() => {});
-  jest.spyOn(console, 'debug').mockImplementation(() => {});
+  rs.spyOn(console, 'error').mockImplementation(() => {});
+  rs.spyOn(console, 'log').mockImplementation(() => {});
+  rs.spyOn(console, 'debug').mockImplementation(() => {});
   g.window = g;
   g.parent = { postMessage: (message: Posted) => posted.push(message) };
   g.addEventListener = (type: string, listener: MessageListener) => {
@@ -45,7 +45,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  jest.restoreAllMocks();
+  rs.restoreAllMocks();
 });
 
 describe('a build that fails outside compile and evaluation', () => {

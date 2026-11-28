@@ -26,11 +26,9 @@ describe('Bundler: a failed source load fails fast + clearly, not a misleading r
     // rejected (a 403 with no CORS header on a cache-cold load).
     const answer = underAppRoot('/src/answer.ts');
     const realRead = h.bundler.fs.readFileAsync.bind(h.bundler.fs);
-    jest
-      .spyOn(h.bundler.fs, 'readFileAsync')
-      .mockImplementation(async (p: string) =>
-        String(p).endsWith('/src/answer.ts') ? Promise.reject(new Error('403: API rate limit exceeded')) : realRead(p)
-      );
+    rs.spyOn(h.bundler.fs, 'readFileAsync').mockImplementation(async (p: string) =>
+      String(p).endsWith('/src/answer.ts') ? Promise.reject(new Error('403: API rate limit exceeded')) : realRead(p)
+    );
 
     // Fails fast at the load/transform attempt…
     await expect(h.bundler.transformModule(answer)).rejects.toThrow(/failed to (load|re-read) source/i);

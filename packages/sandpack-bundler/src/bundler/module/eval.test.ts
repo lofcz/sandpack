@@ -6,10 +6,10 @@ const run = (code: string, exports: any = {}, require: (specifier: string) => un
 
 describe('the module wrapper', () => {
   beforeEach(() => {
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    rs.spyOn(console, 'error').mockImplementation(() => {});
   });
   afterEach(() => {
-    jest.restoreAllMocks();
+    rs.restoreAllMocks();
   });
 
   it('lets a module declare the names that are globals in Node', () => {
@@ -110,7 +110,7 @@ describe('the module wrapper', () => {
 
 describe('module evaluation', () => {
   it('gives modules a browser process with the methods packages call', () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = rs.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       // three 0.187's CommonJS entry warns before re-exporting the ES module.
       const exports = evaluate(

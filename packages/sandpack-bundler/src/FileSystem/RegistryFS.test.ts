@@ -1,3 +1,4 @@
+import type { Mock } from '@rstest/core';
 import { configure, mount, umount, fs } from '@zenfs/core';
 
 import { ModuleRegistry } from '../bundler/module-registry';
@@ -15,7 +16,7 @@ function stubRegistry(modules: NodeModule[]): ModuleRegistry {
 const inlined = (content: string): CDNModuleFileType => ({ c: content, d: [], t: false });
 
 /** A registry with one inlined file, one non-inlined (numeric) file, and a scoped module. */
-function fixture(): { registry: ModuleRegistry; fetcher: jest.Mock } {
+function fixture(): { registry: ModuleRegistry; fetcher: Mock } {
   const react = new NodeModule(
     'react',
     '18.3.1',
@@ -28,8 +29,8 @@ function fixture(): { registry: ModuleRegistry; fetcher: jest.Mock } {
     { name: 'react', version: '18.3.1' },
   );
   const babelRuntime = new NodeModule('@babel/runtime', '7.24.0', { 'helpers/esm/x.js': inlined('export const x = 1;') }, [], { name: '@babel/runtime', version: '7.24.0' });
-  const fetcher = jest.fn<Promise<string>, [string, string, string]>(async () => 'FETCHED CONTENT');
-  return { registry: stubRegistry([react, babelRuntime]), fetcher: fetcher as jest.Mock };
+  const fetcher = rs.fn<(name: string, version: string, path: string) => Promise<string>>(async () => 'FETCHED CONTENT');
+  return { registry: stubRegistry([react, babelRuntime]), fetcher: fetcher as Mock };
 }
 
 /** Mimic the VFS read sequence: stat for size, allocate, read, decode. */
@@ -73,7 +74,7 @@ describe('RegistryFS (direct backend)', () => {
       const { registry } = fixture();
       const bytes = Uint8Array.from([0, 255, 128, 195, 40, 254, 73, 68]);
       registry.modules.get('react')!.files['font.woff2'] = bytes.length;
-      const fetcher = jest.fn(async () => bytes);
+      const fetcher = rs.fn(async () => bytes);
       const regfs = new RegistryFS(registry, fetcher);
       const path = '/react/font.woff2';
       expect((await regfs.stat(path)).size).toBe(bytes.length);
@@ -191,7 +192,7 @@ describe('RegistryFS (direct backend)', () => {
 });
 
 describe('RegistryFS (mounted in a real ZenFS VFS)', () => {
-  let fetcher: jest.Mock;
+  let fetcher: Mock;
 
   beforeEach(async () => {
     await configure({ disableAccessChecks: true });

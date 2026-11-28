@@ -8,7 +8,7 @@
  * recipe — never a local rebuild — so it matches the hash the CLI stamps into the
  * index. The deploy asserts parity against the published artifact (G2-8).
  *
- * Runs in `prebuild`; the generated file is committed so jest + the bundler see it
+ * Runs in `prebuild`; the generated file is committed so the tests + the bundler see it
  * without a build.
  */
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';

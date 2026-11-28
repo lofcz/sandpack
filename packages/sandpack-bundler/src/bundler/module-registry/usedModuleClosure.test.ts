@@ -1,26 +1,27 @@
 /**
- * @jest-environment node
+ * @rstest-environment node
  *
  * Used-module closure: packages listed in CDN `ICDNModule.m` but omitted from
  * `/dep_tree` must still be fetched (e.g. `@swc/helpers` for transformed
  * `@tailwindcss/browser` on CDNs that inject external SWC helpers).
  */
+import type { Mock } from '@rstest/core';
 import { ModuleRegistry } from './index';
 import { fetchManifest, fetchModule, ICDNModule } from './module-cdn';
 
-jest.mock('./module-cdn', () => ({
+rs.mock('./module-cdn', () => ({
   CDN_VERSION: 6,
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
 
 function stubBundler(): any {
   return {
     modules: new Map(),
-    fs: { readFileAsync: jest.fn(), readBytesAsync: jest.fn() },
+    fs: { readFileAsync: rs.fn(), readBytesAsync: rs.fn() },
   };
 }
 

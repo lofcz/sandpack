@@ -1,5 +1,5 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  *
  * esm.sh fallback (transpile-through, shared React) for packages the primary CDN
  * drops — the real lucide-react@^1.21.0 repro. The dropped package's esm.sh source
@@ -10,6 +10,7 @@
  * (jsdom: importing ModuleRegistry transitively loads the evaluation runtime,
  * which references `window`/`self` at module scope.)
  */
+import type { Mock } from '@rstest/core';
 import { computeRequestDepMap, importedPackages } from '@lofcz/transpiler';
 
 import { ModuleRegistry } from '.';
@@ -25,14 +26,14 @@ import {
 } from './esm-fallback';
 import { fetchManifest, fetchModule, ICDNModuleFile, IResolvedDependency } from './module-cdn';
 
-jest.mock('./module-cdn', () => ({
-  ...jest.requireActual('./module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
+rs.mock('./module-cdn', () => ({
+  ...rs.requireActual('./module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
 
 // Primary CDN resolves react/react-dom but drops lucide-react@^1.21.0.
 const REACT_RESOLVED: IResolvedDependency[] = [
@@ -117,7 +118,7 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
   });
 
   it('externalizes react and bridges the package so require() resolves it (no second React)', async () => {
-    const fetcher = jest.fn<Promise<string>, [string]>().mockResolvedValue(LUCIDE_MJS);
+    const fetcher = rs.fn<(url: string) => Promise<string>>().mockResolvedValue(LUCIDE_MJS);
     const r = registry(fetcher);
 
     await r.fetchManifest({ ...DEPS }, { ...DEPS });
@@ -140,14 +141,14 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
   });
 
   it('surfaces a clear error (not a silent undefined) when esm.sh also fails', async () => {
-    const fetcher = jest.fn<Promise<string>, [string]>().mockRejectedValue(new Error('HTTP 404'));
+    const fetcher = rs.fn<(url: string) => Promise<string>>().mockRejectedValue(new Error('HTTP 404'));
     const r = registry(fetcher);
     await r.fetchManifest({ ...DEPS }, { ...DEPS });
     await expect(r.preloadModules()).rejects.toThrow(/Could not resolve "lucide-react@\^1\.21\.0".*esm\.sh fallback.*404/);
   });
 
   it('never sends declared-but-unimported packages to the runtime CDN or its fallback', async () => {
-    const fetcher = jest.fn<Promise<string>, [string]>();
+    const fetcher = rs.fn<(url: string) => Promise<string>>();
     const r = registry(fetcher);
     const declared = { react: '^19.2.5', '@types/react': '^19.2.5', '@types/example__widget': '^1.0.0', vite: '^7.0.0' };
     await r.fetchManifest(declared, computeRequestDepMap(declared, importedPackages(['react', 'react/jsx-runtime']), []));

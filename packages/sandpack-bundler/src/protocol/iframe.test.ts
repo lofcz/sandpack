@@ -1,5 +1,5 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  *
  * register-frame handshake parsing — the §5.2 dirty set rides IInitConfig
  * alongside sdkIntegrity (PRETRANSPILED_ARTIFACTS_SPEC §5.2).
@@ -18,7 +18,7 @@ describe('IFrameParentMessageBus register-frame', () => {
   it.each(['0123456789abcdef', 12345])('echoes the host channel id unchanged: %s', (id) => {
     const bus = new IFrameParentMessageBus();
     registerFrame({ id });
-    const post = jest.spyOn(window.parent, 'postMessage').mockImplementation(() => {});
+    const post = rs.spyOn(window.parent, 'postMessage').mockImplementation(() => {});
     try {
       bus.sendMessage('request-refresh');
       expect(post).toHaveBeenCalledWith({ type: 'request-refresh', codesandbox: true, $id: id }, '*');

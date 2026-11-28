@@ -1,17 +1,18 @@
+import type { Mock } from '@rstest/core';
 import { fs } from '@zenfs/core';
 
 import { underAppRoot } from '../fsLayout';
 import { createBundlerHarness, installEvalGlobals, type BundlerHarness } from './testHarness/bundlerHarness';
 import { fetchManifest, fetchModule } from './module-registry/module-cdn';
 
-jest.mock('./module-registry/module-cdn', () => ({
-  ...jest.requireActual('./module-registry/module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
+rs.mock('./module-registry/module-cdn', () => ({
+  ...rs.requireActual('./module-registry/module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
-const mockedFetchModule = fetchModule as jest.MockedFunction<typeof fetchModule>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
+const mockedFetchModule = fetchModule as Mock<typeof fetchModule>;
 
 /** Every requested package resolves to a one-file CommonJS package that wraps its argument in brackets. */
 function installFakeCdn(): void {

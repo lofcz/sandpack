@@ -76,7 +76,7 @@ export const EVAL_FIXTURE: Record<string, string> = {
 
 /** Install the minimal browser globals the bundler's `evaluate()` reads at run time
  *  (the compiled app + the react-refresh runtime touch `location`/`window`/`document`).
- *  Returns a restore fn — the jest node env has none of these, and leaving `window`
+ *  Returns a restore fn — the node test environment has none of these, and leaving `window`
  *  defined would change `typeof window` for other suites. */
 export function installEvalGlobals(): () => void {
   const g = globalThis as Record<string, unknown>;
@@ -154,7 +154,7 @@ export async function createBundlerHarness(
 
   if (opts.forCompile) {
     // SDK vendoring fetches `@immediately-run/sdk` from the self-host origin (network,
-    // no transport under jest) and is out of scope for an FS-routing/transpile compile.
+    // no transport in a test) and is out of scope for an FS-routing/transpile compile.
     (bundler as unknown as { addLocalModules: () => Promise<void> }).addLocalModules = () => Promise.resolve();
     await bundler.initPreset('create-react-app');
     // The react preset's HMR runtime `require('react-refresh/runtime')` — resolve it.

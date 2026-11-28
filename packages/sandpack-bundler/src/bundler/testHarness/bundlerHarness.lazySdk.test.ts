@@ -9,7 +9,7 @@ it('loads the platform SDK only when reached, shares concurrent loads and retrie
   const bundler = h.bundler;
   const register = () => Bundler.prototype.addLocalModules.call(bundler);
   const vendorTarget = bundler as unknown as { vendorModuleFrom(name: string, baseUrl: string): Promise<void> };
-  const vendor = jest.spyOn(vendorTarget, 'vendorModuleFrom').mockImplementation(async (name) => {
+  const vendor = rs.spyOn(vendorTarget, 'vendorModuleFrom').mockImplementation(async (name) => {
     await bundler.addPreloadedModule(name, 'module.exports = 42;');
   });
   try {

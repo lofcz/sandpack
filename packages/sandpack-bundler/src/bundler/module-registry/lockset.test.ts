@@ -1,5 +1,5 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  *
  * Lockset consumption tests (PRETRANSPILED_ARTIFACTS_SPEC §5.4 + plan phase 01
  * exit criteria): a valid, exactly-matching sidecar lockset replaces the
@@ -7,18 +7,19 @@
  * (jsdom: importing ModuleRegistry transitively loads the evaluation runtime,
  * which references `window`/`self` at module scope.)
  */
+import type { Mock } from '@rstest/core';
 import { ModuleRegistry } from '.';
 import { Bundler } from '../bundler';
 import { depMapsEqual, locksetClosureValid, validateLockset } from './lockset';
 import { CDN_VERSION, fetchManifest } from './module-cdn';
 
-jest.mock('./module-cdn', () => ({
-  ...jest.requireActual('./module-cdn'),
-  fetchManifest: jest.fn(),
-  fetchModule: jest.fn(),
+rs.mock('./module-cdn', () => ({
+  ...rs.requireActual('./module-cdn'),
+  fetchManifest: rs.fn(),
+  fetchModule: rs.fn(),
 }));
 
-const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
+const mockedFetchManifest = fetchManifest as Mock<typeof fetchManifest>;
 
 // A realistic resolved set: every requested dep present at depth 0 (the registry
 // enforces this completeness on the lockset path too — a lockset missing a

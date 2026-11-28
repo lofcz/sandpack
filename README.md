@@ -10,7 +10,7 @@ a host (e.g. Priprava) needs.
 |---|---|---|---|
 | `packages/transpiler` | `@lofcz/transpiler` | Babel/MDX transform chain + the prebuilt same-origin transform worker (`worker/babel-worker.js`) | npm workspace dep of the bundler; `file:` dep of sciobot (worker served from `node_modules`) |
 | `packages/sandpack-client` | `@lofcz/sandpack-client` | Fork of `@codesandbox/sandpack-client` (ZenFS / immutable-fetch patches) | `file:` dep of sciobot |
-| `packages/sandpack-bundler` | `sandpack-bundler` | Parcel bundler running in the preview iframe | **copied** → host `wwwroot/sandpack-bundler/` |
+| `packages/sandpack-bundler` | `sandpack-bundler` | Bundler running in the preview iframe (built with Rsbuild) | **copied** → host `wwwroot/sandpack-bundler/` |
 | `crates/sandpack-cdn` | `sandpack-cdn` (Rust) | npm dep-tree resolver + pre-transpiled package cache sidecar | **copied** → host `Tools/SandpackCdn/` |
 
 External (not in this repo): `@immediately-run/worker-transport` and

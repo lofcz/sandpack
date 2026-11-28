@@ -1,10 +1,4 @@
-// Run the real CSS loader and WASM engine; only browser asset loading is adapted for Node.
-jest.mock('url:lightningcss-wasm/lightningcss_node.wasm', () => ({ __esModule: true, default: 'https://fixture.test/lightningcss.wasm' }), { virtual: true });
-jest.mock('lightningcss-wasm', () => {
-  const { dirname, join } = require('path');
-  return jest.requireActual(join(dirname(require.resolve('lightningcss-wasm')), 'wasm-node.cjs'));
-});
-
+// Runs the real CSS loader and WASM engine: under Node, lightningcss-wasm resolves to its Node build.
 import { CSSTransformer } from './index';
 import { packageCssBase, rebasePackageCssUrls, rebasePackageUrl } from './package-urls';
 import { ITranspilationContext } from '../Transformer';

@@ -179,8 +179,7 @@ describe('fetchVendoredModule', () => {
     // The host pins manifest.json (it does for every version). With the manifest
     // included, verifyVendoredFiles no longer reports it missing.
     const rel = (p: string) => p.replace(`/node_modules/@immediately-run/sdk/`, '');
-    // Deterministic stub hash (jest's env has no WebCrypto); verifyVendoredFiles
-    // takes an injectable hasher.
+    // Deterministic stub hash; verifyVendoredFiles takes an injectable hasher.
     const stub = async (c: string) => `h:${c.length}`;
     const expected: Record<string, string> = {};
     for (const v of vendored) expected[rel(v.path)] = await stub(v.content);
