@@ -5,6 +5,8 @@
  * match the host's current integrity pin must never be served or persisted —
  * it self-heals (evict + refetch) instead of failing the consumer forever.
  */
+import { beforeEach, describe, expect, it, type Mock, rs } from "@rstest/core";
+
 import { handleImmutableFetch } from "./immutable-fetch-protocol";
 
 const ALLOWED =
@@ -251,14 +253,14 @@ describe("self-hosted immutable fetch policy", () => {
   const prefix = "https://host.example/sandpack-cdn/package/";
   const url = `${prefix}7/react@19.1.0`;
   let cache: FakeCache;
-  let network: jest.Mock;
+  let network: Mock;
 
   beforeEach(() => {
     cache = new FakeCache();
     (globalThis as any).caches = {
-      open: jest.fn().mockResolvedValue(cache),
+      open: rs.fn().mockResolvedValue(cache),
     };
-    network = jest.fn().mockResolvedValue(cdnPayload("SELF-HOSTED"));
+    network = rs.fn().mockResolvedValue(cdnPayload("SELF-HOSTED"));
     globalThis.fetch = network;
   });
 
@@ -347,12 +349,12 @@ describe("handleImmutableFetch — only a plausible payload is kept", () => {
   const packageUrl = `${prefix}7/react@19.1.0`;
   const scriptUrl = "https://unpkg.com/pkg@1.2.3/dist/index.js";
   let cache: FakeCache;
-  let network: jest.Mock;
+  let network: Mock;
 
   beforeEach(() => {
     cache = new FakeCache();
     (globalThis as any).caches = { open: async () => cache };
-    network = jest.fn();
+    network = rs.fn();
     globalThis.fetch = network;
   });
 

@@ -2,6 +2,8 @@
  * R3-367 — the channel id hardening (node env: the protocol constructor skips
  * window registration when absent, so 10⁵ draws stay cheap and listener-free).
  */
+import { describe, expect, it, rs } from "@rstest/core";
+
 import { IFrameProtocol } from "./iframe-protocol";
 
 const fakeFrame = (): HTMLIFrameElement =>
@@ -28,7 +30,7 @@ describe("R3-367: the channel id", () => {
   });
 
   it("draws from crypto.getRandomValues, not Math.random", () => {
-    const mathRandom = jest.spyOn(Math, "random");
+    const mathRandom = rs.spyOn(Math, "random");
     const protocol = new IFrameProtocol(fakeFrame(), "*");
     expect(protocol.channelId).toMatch(/^[0-9a-f]{16}$/);
     expect(mathRandom).not.toHaveBeenCalled();

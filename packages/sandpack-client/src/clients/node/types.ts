@@ -1,10 +1,18 @@
-import type { WorkerStatusUpdate } from "@codesandbox/nodebox";
+import type { ShellProcess, WorkerStatusUpdate } from "@codesandbox/nodebox";
 
 import type {
   BaseSandpackMessage,
   SandpackErrorMessage,
   SandpackLogLevel,
 } from "../..";
+
+/**
+ * The options of `ShellProcess.runCommand`. Nodebox declares them in a module
+ * its package.json does not export, so the type is read off the public API.
+ */
+export type ShellCommandOptions = NonNullable<
+  Parameters<ShellProcess["runCommand"]>[2]
+>;
 
 type SandpackStandartMessages =
   | {

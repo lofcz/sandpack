@@ -1,9 +1,11 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  *
  * R3-367 — the jsdom-dependent halves: the evt.source authentication invariant
  * and the getCodeSandboxURL gesture gate.
  */
+import { afterEach, describe, expect, it, rs } from "@rstest/core";
+
 import { IFrameProtocol } from "./iframe-protocol";
 import {
   codeSandboxExportAllowed,
@@ -12,7 +14,7 @@ import {
 
 describe("R3-367: registration does NOT log the channel id", () => {
   it("an observer no longer gets the correlation key for free (register in jsdom: it reads document.location)", () => {
-    const consoleLog = jest
+    const consoleLog = rs
       .spyOn(console, "log")
       .mockImplementation(() => undefined);
     try {

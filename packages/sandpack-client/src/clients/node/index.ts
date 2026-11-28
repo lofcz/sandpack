@@ -4,7 +4,6 @@
 // not remove (referenced by clients/index.ts dispatch + the G1/T1 test's exempt set).
 import { PREVIEW_LOADED_MESSAGE_TYPE, Nodebox } from "@codesandbox/nodebox";
 import type { ShellProcess, FSWatchEvent } from "@codesandbox/nodebox";
-import type { ShellCommandOptions } from "@codesandbox/nodebox/build/modules/shell";
 
 import type {
   ClientOptions,
@@ -24,7 +23,7 @@ import {
 } from "./client.utils";
 import { loadPreviewIframe, setPreviewIframeProperties } from "./iframe.utils";
 import { injectScriptToIframe } from "./inject-scripts";
-import type { SandpackNodeMessage } from "./types";
+import type { SandpackNodeMessage, ShellCommandOptions } from "./types";
 
 export class SandpackNode extends SandpackClient {
   // General
@@ -37,9 +36,6 @@ export class SandpackNode extends SandpackClient {
   private emulatorCommand: [string, string[], ShellCommandOptions] | undefined;
   private iframePreviewUrl: string | undefined;
   private messageChannelId = generateRandomId();
-
-  // Public
-  public iframe!: HTMLIFrameElement;
 
   private _initPromise: Promise<void> | null = null;
 

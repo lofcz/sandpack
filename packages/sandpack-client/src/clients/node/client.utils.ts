@@ -1,9 +1,9 @@
-import type { ShellCommandOptions } from "@codesandbox/nodebox/build/modules/shell";
 import { invariant } from "outvariant";
 
 import { createError } from "../..";
 
 import { tokenize, TokenType } from "./taskManager";
+import type { ShellCommandOptions } from "./types";
 
 let counter = 0;
 
@@ -20,7 +20,7 @@ export function generateRandomId() {
 export const findStartScriptPackageJson = (
   packageJson: string,
 ): [string, string[], ShellCommandOptions] => {
-  let scripts: Record<string, string> = {};
+  let scripts: Record<string, string>;
   // TODO: support postinstall
   const possibleKeys = ["dev", "start"];
 

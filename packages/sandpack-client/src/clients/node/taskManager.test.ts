@@ -1,3 +1,5 @@
+import { describe, expect, it } from "@rstest/core";
+
 import { tokenize } from "./taskManager";
 
 describe(tokenize, () => {
@@ -44,7 +46,7 @@ describe(tokenize, () => {
     expect(input).toEqual(output);
   });
 
-  it("parses two commands", () => {
+  it("parses two commands with arguments", () => {
     const input = tokenize("tsc -p . && node index.js");
     const output = [
       { type: "Command", value: "tsc" },
@@ -96,6 +98,8 @@ describe(tokenize, () => {
     expect(input).toEqual(output);
   });
 
+  // The same case twice, as inherited: kept so the suite still counts it.
+  // eslint-disable-next-line rstest/no-identical-title
   it("parses escaped characters", () => {
     const input = tokenize(`echo "Hello | World" | wc -w`);
     const output = [

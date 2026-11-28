@@ -1,4 +1,13 @@
 import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type MockInstance,
+  rs,
+} from "@rstest/core";
+import {
   InMemory,
   bindContext,
   mount,
@@ -18,13 +27,13 @@ const noopPortFactory = (): Promise<MessagePort> =>
  * §6.5): every mutation of the shared ZenFS store must go through
  * `SandpackFS.writeFile`/`handleRemoteChange` so an `onChange` is emitted. In dev a
  * guard catches a write that reaches the instance's bound-context fs by any other
- * path. Jest sets `NODE_ENV=test` (≠ "production"), so the guard is active here.
+ * path. Rstest sets `NODE_ENV=test` (≠ "production"), so the guard is active here.
  */
 describe("SandpackFS — out-of-band write guard (R3-110)", () => {
-  let errorSpy: jest.SpyInstance;
+  let errorSpy: MockInstance;
 
   beforeEach(() => {
-    errorSpy = jest
+    errorSpy = rs
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
   });
@@ -406,7 +415,7 @@ describe("SandpackFS mount ownership", () => {
     const fs = await SandpackFS.fromFiles({}, {}, noopPortFactory);
     const owned = [...mounts.keys()].filter((path) => !before.has(path));
     expect(owned).toHaveLength(1);
-    const changed = jest.fn();
+    const changed = rs.fn();
     fs.onChange(changed);
     fs.dispose();
     fs.dispose();

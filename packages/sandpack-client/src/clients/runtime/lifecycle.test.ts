@@ -1,6 +1,17 @@
-/** @jest-environment jsdom */
+/** @rstest-environment jsdom */
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  type MockInstance,
+  rs,
+} from "@rstest/core";
+
 import type { SandpackFS } from "../../fs/SandpackFS";
-import type { ClientOptions, SandpackMessage } from "../../types";
+import type { ClientOptions, SandpackTemplate } from "../../types";
 import { SandpackRuntime } from "./index";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -14,22 +25,22 @@ const deferred = <T>() => {
 
 describe("runtime navigation and registration ownership", () => {
   let client: SandpackRuntime;
-  let port: { close: jest.Mock };
+  let port: { close: Mock };
   let filesystem: {
-    connectRemote: jest.Mock;
-    exists: jest.Mock;
-    readFile: jest.Mock;
-    list: jest.Mock;
-    dispose: jest.Mock;
+    connectRemote: Mock;
+    exists: Mock;
+    readFile: Mock;
+    list: Mock;
+    dispose: Mock;
   };
-  let frameWindow: { postMessage: jest.Mock };
-  let navigate: jest.Mock;
-  let onUnexpectedNavigation: jest.Mock;
-  let warnings: jest.SpyInstance;
-  let errors: jest.SpyInstance;
+  let frameWindow: { postMessage: Mock };
+  let navigate: Mock;
+  let onUnexpectedNavigation: Mock;
+  let warnings: MockInstance;
+  let errors: MockInstance;
   let workers: {
-    postMessage: jest.Mock;
-    terminate: jest.Mock;
+    postMessage: Mock;
+    terminate: Mock;
     onerror?: ((event: Partial<ErrorEvent>) => void) | null;
     onmessageerror?: (() => void) | null;
   }[];
@@ -39,33 +50,33 @@ describe("runtime navigation and registration ownership", () => {
 
   beforeEach(() => {
     workers = [];
-    globalThis.Worker = jest.fn().mockImplementation(() => {
-      const worker = { postMessage: jest.fn(), terminate: jest.fn() };
+    globalThis.Worker = rs.fn().mockImplementation(() => {
+      const worker = { postMessage: rs.fn(), terminate: rs.fn() };
       workers.push(worker);
       return worker;
     });
-    globalThis.MessageChannel = jest.fn().mockImplementation(() => ({
-      port1: { close: jest.fn() }, port2: { close: jest.fn() },
+    globalThis.MessageChannel = rs.fn().mockImplementation(() => ({
+      port1: { close: rs.fn() }, port2: { close: rs.fn() },
     }));
-    warnings = jest.spyOn(console, "warn").mockImplementation(() => {});
-    errors = jest.spyOn(console, "error").mockImplementation(() => {});
-    port = { close: jest.fn() };
+    warnings = rs.spyOn(console, "warn").mockImplementation(() => {});
+    errors = rs.spyOn(console, "error").mockImplementation(() => {});
+    port = { close: rs.fn() };
     filesystem = {
-      connectRemote: jest.fn().mockResolvedValue(port),
-      exists: jest.fn().mockResolvedValue(true),
-      readFile: jest.fn().mockResolvedValue(
+      connectRemote: rs.fn().mockResolvedValue(port),
+      exists: rs.fn().mockResolvedValue(true),
+      readFile: rs.fn().mockResolvedValue(
         JSON.stringify({
           dependencies: { react: "19.1.0", shared: "1.0.0" },
           main: "index.js",
         }),
       ),
-      list: jest.fn().mockResolvedValue(["/package.json", "/index.js"]),
-      dispose: jest.fn(),
+      list: rs.fn().mockResolvedValue(["/package.json", "/index.js"]),
+      dispose: rs.fn(),
     };
     // A real browsing context retains its WindowProxy across navigations.
     // jsdom replaces it, so model that browser contract explicitly here.
-    frameWindow = { postMessage: jest.fn() };
-    navigate = jest.fn();
+    frameWindow = { postMessage: rs.fn() };
+    navigate = rs.fn();
     const attributes = new Map<string, string>();
     const frame = {
       contentWindow: frameWindow,
@@ -76,13 +87,13 @@ describe("runtime navigation and registration ownership", () => {
         attributes.set(key, value),
       getAttribute: (key: string) => attributes.get(key) ?? null,
     } as unknown as HTMLIFrameElement;
-    onUnexpectedNavigation = jest.fn();
+    onUnexpectedNavigation = rs.fn();
     mount = (options = {}) =>
       new SandpackRuntime(
         frame,
         {
           fs: filesystem as unknown as SandpackFS,
-          template: "vanilla",
+          template: "vanilla" as SandpackTemplate,
           entry: "/host-entry.js",
           dependencies: { shared: "2.0.0", "html-to-image": "1.11.13" },
         },
@@ -102,7 +113,7 @@ describe("runtime navigation and registration ownership", () => {
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    rs.useRealTimers();
     client.destroy();
     warnings.mockRestore();
     errors.mockRestore();
@@ -266,7 +277,7 @@ describe("runtime navigation and registration ownership", () => {
       configurable: true,
       value: undefined,
     });
-    const network = jest.fn();
+    const network = rs.fn();
     const previousFetch = globalThis.fetch;
     globalThis.fetch = network;
     try {
@@ -332,11 +343,11 @@ describe("runtime navigation and registration ownership", () => {
   });
 
   /** The build results a host's listener received, as the fields they carry. */
-  const heard = (listener: jest.Mock) =>
+  const heard = (listener: Mock) =>
     listener.mock.calls
-      .map(([message]: [SandpackMessage]) => {
+      .map(([message]) => {
         const { type, action, title, message: text, compilatonError } =
-          message as unknown as Record<string, unknown>;
+          message as Record<string, unknown>;
         return { type, action, title, message: text, compilatonError };
       })
       .filter(({ type }) => type === "action" || type === "done");
@@ -351,7 +362,7 @@ describe("runtime navigation and registration ownership", () => {
 
   describe("a Babel worker that fails", () => {
     it("is reported at once to the listeners, as a failed build, and to the bundler", async () => {
-      const listener = jest.fn();
+      const listener = rs.fn();
       client.listen(listener);
       send({ type: "initialized" });
       await flush();
@@ -378,7 +389,7 @@ describe("runtime navigation and registration ownership", () => {
     });
 
     it("names the uncaught error and where it was thrown", async () => {
-      const listener = jest.fn();
+      const listener = rs.fn();
       client.listen(listener);
       send({ type: "initialized" });
       await flush();
@@ -394,7 +405,7 @@ describe("runtime navigation and registration ownership", () => {
     });
 
     it("reports a message the worker sent that could not be read", async () => {
-      const listener = jest.fn();
+      const listener = rs.fn();
       client.listen(listener);
       send({ type: "initialized" });
       await flush();
@@ -408,7 +419,7 @@ describe("runtime navigation and registration ownership", () => {
     });
 
     it("is replaced without a report while it only warms, and its replacement is reported", async () => {
-      const listener = jest.fn();
+      const listener = rs.fn();
       client.listen(listener);
       workers[0].onerror!({});
       expect(heard(listener)).toEqual([]);
@@ -424,10 +435,10 @@ describe("runtime navigation and registration ownership", () => {
     });
 
     it("is reported when it cannot even be created for the registration", async () => {
-      const listener = jest.fn();
+      const listener = rs.fn();
       client.listen(listener);
       workers[0].onerror!({});
-      (globalThis.Worker as unknown as jest.Mock).mockImplementation(() => {
+      (globalThis.Worker as unknown as Mock).mockImplementation(() => {
         throw new Error("worker-src blocks /babel-worker.js");
       });
       send({ type: "initialized" });
@@ -442,7 +453,7 @@ describe("runtime navigation and registration ownership", () => {
     });
 
     it("says nothing for a worker a newer navigation has replaced", async () => {
-      const listener = jest.fn();
+      const listener = rs.fn();
       client.listen(listener);
       send({ type: "initialized" });
       await flush();
@@ -470,56 +481,56 @@ describe("runtime navigation and registration ownership", () => {
       "Preview page failed to load",
       "https://host.example/sandpack/preview did not start within 1000 ms of being opened.",
     );
-    let listener: jest.Mock;
+    let listener: Mock;
     /** Replace the client with one whose navigation is timed by fake timers. */
     const remount = (options: ClientOptions = { bootTimeoutMs: 1000 }) => {
       client.destroy();
-      jest.useFakeTimers();
+      rs.useFakeTimers();
       navigate.mockClear();
       client = mount(options);
-      listener = jest.fn();
+      listener = rs.fn();
       client.listen(listener);
     };
 
     it("is reported after the boot deadline, and reload requests are honoured again", () => {
       remount();
-      jest.advanceTimersByTime(999);
+      rs.advanceTimersByTime(999);
       expect(heard(listener)).toEqual([]);
       send({ type: "request-refresh" });
       expect(navigate).toHaveBeenCalledTimes(1); // still waiting for that page
-      jest.advanceTimersByTime(1);
+      rs.advanceTimersByTime(1);
       expect(heard(listener)).toEqual(PAGE_FAILED);
       expect(client.errors).toHaveLength(1);
       send({ type: "request-refresh" });
       expect(navigate).toHaveBeenCalledTimes(2);
       // The new navigation gets a deadline of its own.
-      jest.advanceTimersByTime(1000);
+      rs.advanceTimersByTime(1000);
       expect(heard(listener)).toEqual([...PAGE_FAILED, ...PAGE_FAILED]);
     });
 
     it("is not reported when the page boots in time", async () => {
       remount();
       send({ type: "initialized", boot: bootOf(0) });
-      expect(jest.getTimerCount()).toBe(0);
-      jest.advanceTimersByTime(60_000);
+      expect(rs.getTimerCount()).toBe(0);
+      rs.advanceTimersByTime(60_000);
       expect(heard(listener)).toEqual([]);
     });
 
     it("times only the latest navigation", () => {
       remount();
-      jest.advanceTimersByTime(600);
+      rs.advanceTimersByTime(600);
       client.dispatch({ type: "refresh" });
-      jest.advanceTimersByTime(600);
+      rs.advanceTimersByTime(600);
       expect(heard(listener)).toEqual([]);
-      jest.advanceTimersByTime(400);
+      rs.advanceTimersByTime(400);
       expect(heard(listener)).toEqual(PAGE_FAILED);
     });
 
     it("still registers a page that was only slow, instead of tearing it down", async () => {
       remount();
-      jest.advanceTimersByTime(1000);
+      rs.advanceTimersByTime(1000);
       expect(heard(listener)).toEqual(PAGE_FAILED);
-      jest.useRealTimers();
+      rs.useRealTimers();
       send({ type: "initialized", boot: bootOf(0) });
       await flush();
       expect(onUnexpectedNavigation).not.toHaveBeenCalled();
@@ -528,11 +539,11 @@ describe("runtime navigation and registration ownership", () => {
 
     it("has no deadline when the option turns it off, and none after destroy", () => {
       remount({ bootTimeoutMs: 0 });
-      expect(jest.getTimerCount()).toBe(0);
+      expect(rs.getTimerCount()).toBe(0);
       remount();
-      expect(jest.getTimerCount()).toBe(1);
+      expect(rs.getTimerCount()).toBe(1);
       client.destroy();
-      expect(jest.getTimerCount()).toBe(0);
+      expect(rs.getTimerCount()).toBe(0);
     });
   });
 });

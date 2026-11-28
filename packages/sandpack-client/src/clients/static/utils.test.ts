@@ -1,6 +1,8 @@
 /**
- * @jest-environment jsdom
+ * @rstest-environment jsdom
  */
+
+import { describe, expect, it } from "@rstest/core";
 
 import { validateHtml } from "./utils";
 
@@ -26,7 +28,7 @@ describe(validateHtml, () => {
     );
   });
 
-  it("shouldn't change anything if a valid document is provided ", () => {
+  it("shouldn't change anything if a valid document is provided", () => {
     const content = `<!DOCTYPE html>
 <html lang="en"><head></head>
   <body>

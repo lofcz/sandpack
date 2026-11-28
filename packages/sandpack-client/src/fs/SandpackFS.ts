@@ -593,7 +593,7 @@ export class SandpackFS {
       if (relPath === META_DIR) continue;
 
       const absEntry = this.toAbs(relPath);
-      let isDir = false;
+      let isDir: boolean;
       try {
         const stat = await this.fsContext.fs.promises.stat(absEntry);
         isDir = stat.isDirectory();

@@ -4,6 +4,7 @@
  * The plan is to take some time and refactor codesandbox-api into what it was supposed to be in the first place,
  * an abstraction over the actions that can be dispatched between the bundler and the iframe.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import type { IFrameProtocol } from "./iframe-protocol";
 import type {

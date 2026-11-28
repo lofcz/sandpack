@@ -1,3 +1,5 @@
+import { describe, expect, it } from "@rstest/core";
+
 import { findStartScriptPackageJson } from "./client.utils";
 
 describe(findStartScriptPackageJson, () => {

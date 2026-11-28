@@ -41,7 +41,6 @@ export class SandpackStatic extends SandpackClient {
   private emitter: EventEmitter;
   private previewController: PreviewController;
 
-  public iframe!: HTMLIFrameElement;
   public selector!: string;
   public element: Element;
 

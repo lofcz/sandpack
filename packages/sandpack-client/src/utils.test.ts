@@ -1,3 +1,5 @@
+import { describe, expect, it, test } from "@rstest/core";
+
 import { addPackageJSONIfNeededToMap, normalizePath } from "./utils";
 
 // The filesystem-mutating `addPackageJSONIfNeeded(fs, …)` variant was removed
