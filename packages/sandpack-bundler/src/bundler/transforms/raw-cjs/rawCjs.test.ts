@@ -56,12 +56,52 @@ describe('scanCjsModule', () => {
     expect(scanCjsModule('module.exports = <div />;').isEsm).toBe(true);
   });
 
-  it('defers locally bound require and computed specifiers to the scope-aware compiler', () => {
-    expect(scanCjsModule('function loader(require) { return require("not-an-npm-package"); }').isEsm).toBe(true);
-    expect(scanCjsModule('function loader({ require }) { return require("local"); }').isEsm).toBe(true);
+  it('defers computed specifiers to the compiler', () => {
     expect(scanCjsModule('const name = "react"; module.exports = require(name);').isEsm).toBe(true);
     expect(scanCjsModule('module.exports = require("react" + "-dom");').isEsm).toBe(true);
+    expect(scanCjsModule('module.exports = require();').isEsm).toBe(true);
     expect(scanCjsModule('module.exports = require("react", true);').requires).toEqual(['react']);
+  });
+
+  // elkjs/lib/elk.bundled.js (1.6 MB, a browserify bundle) went through the whole
+  // compiler on every boot because its loader has a parameter named `require`.
+  it('leaves the require a bundle declares for itself to the bundle', () => {
+    const run = { requires: [], isEsm: false };
+    expect(scanCjsModule('function loader(require) { return require("not-an-npm-package"); }')).toEqual(run);
+    expect(scanCjsModule('function loader({ require }) { return require("local"); }')).toEqual(run);
+    expect(scanCjsModule('(function () { var require = window.amd; return function () { return require(name); }; })();')).toEqual(run);
+    expect(scanCjsModule('(function () { use(require("inner")); function require(id) { return registry[id]; } })();')).toEqual(run);
+    expect(scanCjsModule('var load = function require(id) { return require(id + "/index"); };')).toEqual(run);
+    expect(scanCjsModule('var load = (require) => (id) => require(id);')).toEqual(run);
+    // browserify: the modules of the bundle are functions of (require, module, exports).
+    const browserify =
+      '(function e(t,n,r){function s(o,u){if(!n[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);}return n[o].exports}' +
+      'for(var i=typeof require=="function"&&require,o=0;o<r.length;o++)s(r[o]);return s})' +
+      '({1:[function(require,module,exports){module.exports=require("./lib/b")},{"./lib/b":2}],2:[function(require,module,exports){module.exports=require(name)},{}]},{},[1]);';
+    expect(scanCjsModule(browserify)).toEqual(run);
+  });
+
+  it('still collects the calls that reach the require the file is given', () => {
+    const umd =
+      '(function (root, factory) { if (typeof module === "object") module.exports = factory(require("react")); else root.Lib = factory(root.React); })' +
+      '(this, function (React) { function inner(require) { return require("own"); } return { inner: inner, dom: require("react-dom") }; });';
+    expect(scanCjsModule(umd)).toEqual({ requires: ['react', 'react-dom'], isEsm: false });
+    // The loader's own require ends with its function.
+    expect(scanCjsModule('(function (require) { require("own"); })(load); module.exports = require(name);').isEsm).toBe(true);
+    expect(scanCjsModule('(function (require) { require("own"); })(load); module.exports = require("dep");'))
+      .toEqual({ requires: ['dep'], isEsm: false });
+  });
+
+  it('leaves a require declared where the function scope does not decide to the compiler', () => {
+    // At the top level it is the file's own require that is redeclared.
+    expect(scanCjsModule('var require = window.amd; module.exports = require("x");').isEsm).toBe(true);
+    expect(scanCjsModule('function require(id) {} module.exports = require("x");').isEsm).toBe(true);
+    // Block-scoped: bound in part of the function only.
+    expect(scanCjsModule('function f() { if (amd) { const require = amd.require; require("own"); } return require("dep"); }').isEsm).toBe(true);
+    expect(scanCjsModule('function f() { try { run(); } catch (require) { require("own"); } }').isEsm).toBe(true);
+    expect(scanCjsModule('function f() { class require {} }').isEsm).toBe(true);
+    // ... unless a function around it declares require anyway.
+    expect(scanCjsModule('function f(require) { { let require = 1; } return require("own"); }')).toEqual({ requires: [], isEsm: false });
   });
 
   // R3-233: a regex literal whose body holds a quote or `/` used to desync the
