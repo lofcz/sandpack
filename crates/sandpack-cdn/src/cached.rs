@@ -56,6 +56,17 @@ where
         }
     }
 
+    /// A cache that already holds `value`, fetched now.
+    pub fn ready(refresh_interval: Duration, value: T) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(CachedInner {
+                last_fetched: Some((Instant::now(), value)),
+                inflight: None,
+            })),
+            refresh_interval,
+        }
+    }
+
     pub async fn get_cached<F, E>(&self, f: F) -> Result<T, SendableError>
     where
         F: FnOnce(Option<T>) -> BoxFut<'static, Result<T, E>> + Send + 'static,

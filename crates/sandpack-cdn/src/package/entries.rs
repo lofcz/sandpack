@@ -263,12 +263,9 @@ impl<'a> PackageGraph<'a> {
     }
 }
 
-/// The closure of `entries` within the processed `module` of package `name`.
-pub fn entry_closure<'a>(
-    name: &str,
-    module: &MinimalCachedModule,
-    entries: impl IntoIterator<Item = &'a String>,
-) -> EntryClosure {
+/// The files of a processed package by size, and its manifest: what a
+/// `PackageGraph` over it is built from.
+fn package_view(name: &str, module: &MinimalCachedModule) -> (PackageJSON, HashMap<String, u64>) {
     let files_map: HashMap<String, u64> = module
         .files
         .iter()
@@ -286,6 +283,43 @@ pub fn entry_closure<'a>(
         _ => None,
     }
     .unwrap_or_else(|| empty_pkg(name));
+    (pkg, files_map)
+}
+
+/// Code the bundler would have to compile itself if it got it as published.
+fn is_code(path: &str) -> bool {
+    matches!(path.rsplit('.').next(), Some("js" | "mjs" | "cjs"))
+}
+
+/// The code files `entries` name that the package was not transformed along.
+/// A package is processed from the entries it declares, but any file of one
+/// without `exports` can be imported (`dayjs/plugin/utc`,
+/// `lodash/debounce`): such a file is only listed until it is asked for.
+pub fn untransformed_entry_files<'a>(
+    name: &str,
+    module: &MinimalCachedModule,
+    entries: impl IntoIterator<Item = &'a String>,
+) -> Vec<String> {
+    let (pkg, files_map) = package_view(name, module);
+    let graph = PackageGraph::new(&pkg, &files_map);
+    let mut found: Vec<String> = Vec::new();
+    for entry in entries {
+        for file in graph.entry_files(entry) {
+            if is_code(&file) && matches!(module.files.get(&file), Some(MinimalFile::Ignored(_))) && !found.contains(&file) {
+                found.push(file);
+            }
+        }
+    }
+    found
+}
+
+/// The closure of `entries` within the processed `module` of package `name`.
+pub fn entry_closure<'a>(
+    name: &str,
+    module: &MinimalCachedModule,
+    entries: impl IntoIterator<Item = &'a String>,
+) -> EntryClosure {
+    let (pkg, files_map) = package_view(name, module);
     let graph = PackageGraph::new(&pkg, &files_map);
 
     let mut closure = EntryClosure::default();

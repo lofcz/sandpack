@@ -34,10 +34,13 @@ pub async fn get_package_data_reply(
     let query: PackageQuery = serde_json::from_str(&decoded_query)?;
     // Validates the name and the exact version.
     let (pkg_name, pkg_version) = parse_package_specifier(&format!("{}@{}", query.name, query.version))?;
-    let package_content = pkg_processor.get(&pkg_name, &pkg_version).await?;
     let module = match &query.entry {
-        Some(entry) => entry_module(&pkg_name, &package_content.0, entry),
-        None => listing(&package_content.0),
+        Some(entry) => {
+            let entries = [entry.clone()];
+            let package_content = pkg_processor.get_with_entries(&pkg_name, &pkg_version, &entries).await?;
+            entry_module(&pkg_name, &package_content.0, entry)
+        }
+        None => listing(&pkg_processor.get(&pkg_name, &pkg_version).await?.0),
     };
     let mut reply = CustomReply::msgpack(&module)?;
     let cache_ttl = 365 * 24 * 3600;

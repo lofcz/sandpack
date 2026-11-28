@@ -357,6 +357,16 @@ impl DepTreeCollector {
                         state.resolved = Some((version.clone(), request.source.clone()));
                         state.entries.clone()
                     };
+                    // What an entry outside the package's declared ones imports
+                    // is known once it is transformed.
+                    let asked: Vec<String> = entries.iter().cloned().collect();
+                    let content = match collector.pkg_processor.get_with_entries(&request.source, &version, &asked).await {
+                        Ok(content) => content,
+                        Err(err) => {
+                            warn!("Entries {:?} of {}@{} stay as resolved: {:?}", asked, request.source, version, err);
+                            content
+                        }
+                    };
                     collector.dependencies.lock().push(Dependency::new(
                         request.name.clone(),
                         version.clone(),
@@ -380,7 +390,8 @@ impl DepTreeCollector {
     fn spawn_expand(&self, name: String, source: String, version: String, entries: BTreeSet<String>, depth: u32) {
         let collector = self.clone();
         self.spawn(async move {
-            match collector.pkg_processor.get(&source, &version).await {
+            let asked: Vec<String> = entries.iter().cloned().collect();
+            match collector.pkg_processor.get_with_entries(&source, &version, &asked).await {
                 Ok(content) => collector.add_dep_requests(closure_requests(
                     &name, &source, &version, &content, &entries, depth,
                 )),

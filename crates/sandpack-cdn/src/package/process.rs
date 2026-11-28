@@ -161,7 +161,8 @@ fn transform_files(
     let mut queue: Vec<String> = entries.iter().flat_map(|entry| graph.path_files(entry, None)).collect();
     let mut package_types = PackageTypes::new(pkg_root);
     while let Some(found_file) = queue.pop() {
-        if result_map.contains_key(found_file.as_str()) {
+        // A listed file (`Ignored`) has not been read yet; anything else is done.
+        if matches!(result_map.get(found_file.as_str()), Some(MinimalFile::File { .. } | MinimalFile::Failed(_))) {
             continue;
         }
         let content = match fs::read_to_string(pkg_root.join(found_file.as_str())) {
@@ -407,6 +408,53 @@ pub async fn process_npm_package(
     transform_result
 }
 
+/// Transforms `files` of an already processed package, and what they load
+/// inside it, on top of `module`.
+fn extend_package(
+    pkg_output_path: PathBuf,
+    mut module: MinimalCachedModule,
+    files: Vec<String>,
+) -> Result<MinimalCachedModule, ServerError> {
+    let mut file_paths: HashMap<String, u64> = HashMap::new();
+    collect_file_paths(pkg_output_path.clone(), pkg_output_path.clone(), &mut file_paths)?;
+    let pkg_json_content = fs::read_to_string(pkg_output_path.join("package.json"))?;
+    let parsed_pkg_json: PackageJSON = package_json::parse_pkg_json(pkg_json_content)?;
+    let graph = PackageGraph::new(&parsed_pkg_json, &file_paths);
+    let mut used_modules: HashSet<String> = module.modules.drain(..).collect();
+    transform_files(files, &graph, &mut module.files, &pkg_output_path, &mut used_modules);
+    module.modules = used_modules.into_iter().collect();
+    Ok(module)
+}
+
+/// `module` with `files` (listed only so far) and their closure transformed:
+/// the package is downloaded again, since only its transformed part is kept.
+#[tracing::instrument(name = "extend_npm_package", skip(temp_dir, npm_db, content_fetcher, module))]
+pub async fn extend_npm_package(
+    package_name: &str,
+    package_version: &str,
+    temp_dir: &str,
+    npm_db: &NpmDatabase,
+    content_fetcher: &PackageContentFetcher,
+    module: MinimalCachedModule,
+    files: Vec<String>,
+) -> Result<MinimalCachedModule, ServerError> {
+    let tarball_content =
+        download_package_content(package_name, package_version, npm_db, content_fetcher).await?;
+    let unpacked = Path::new(temp_dir)
+        .join(nanoid!())
+        .join(format!("{}-{}", package_name, package_version));
+    tar::store_tarball(tarball_content.as_ref().clone(), unpacked.as_path())?;
+    let pkg_output_path = unpacked.join("package");
+
+    let cloned_pkg_output_path = pkg_output_path.clone();
+    let task = tokio::task::spawn_blocking(move || extend_package(cloned_pkg_output_path, module, files));
+    let result = task.await?;
+
+    tokio::fs::remove_dir_all(pkg_output_path.as_path()).await?;
+
+    result
+}
+
 pub fn parse_package_specifier_no_validation(
     package_specifier: &str,
 ) -> Result<(String, String), ServerError> {
@@ -562,6 +610,51 @@ mod tests {
         }
         let plain = crate::utils::msgpack::serialize_msgpack(module.files.get("plain.js").unwrap()).unwrap();
         assert!(!plain.windows(2).any(|pair| pair == [0xa1, b'u']), "an empty list is not written");
+    }
+
+    // dayjs: `main` is one bundle, and every plugin is a file of its own that
+    // nothing in the package imports. `dayjs/plugin/utc` was listed only, so
+    // the bundler downloaded it as published and compiled it itself.
+    #[test]
+    fn a_file_outside_the_declared_entries_is_transformed_when_it_is_asked_for() {
+        let unpacked = Unpacked::new(&[
+            ("package.json", r#"{ "name": "dayish", "version": "1.0.0", "main": "index.js" }"#),
+            ("index.js", "module.exports = function dayish() {};"),
+            ("plugin/utc.js", "import pad from 'left-pad'; import { shared } from './shared.js'; export default (d) => pad(shared(d));"),
+            ("plugin/shared.js", "export const shared = (d) => d;"),
+            ("plugin/other.js", "module.exports = require('never-asked-for');"),
+            ("plugin/style.css", ".day { color: red }"),
+        ]);
+        let (module, _) = transform_package(unpacked.0.clone(), "dayish", "1.0.0").unwrap();
+        let entries = |list: &[&str]| -> Vec<String> { list.iter().map(|entry| entry.to_string()).collect() };
+        let untransformed = |module: &MinimalCachedModule, list: &[&str]| {
+            super::super::entries::untransformed_entry_files("dayish", module, entries(list).iter())
+        };
+
+        assert!(matches!(module.files.get("plugin/utc.js"), Some(MinimalFile::Ignored(_))));
+        assert_eq!(untransformed(&module, &["."]), Vec::<String>::new());
+        assert_eq!(untransformed(&module, &["./plugin/utc.js", "./plugin/utc"]), vec!["plugin/utc.js".to_string()]);
+        // Not code: the bundler takes it as published.
+        assert_eq!(untransformed(&module, &["./plugin/style.css"]), Vec::<String>::new());
+
+        let extended = extend_package(unpacked.0.clone(), module.clone(), vec!["plugin/utc.js".to_string()]).unwrap();
+        assert_eq!(dependencies_of(&extended, "plugin/utc.js"), Some(vec!["./shared.js", "left-pad"]));
+        // What it loads inside the package came with it, as CommonJS.
+        assert!(content_of(&extended, "plugin/shared.js").contains("shared"));
+        assert!(!content_of(&extended, "plugin/shared.js").contains("export const"));
+        assert_eq!(extended.modules, vec!["left-pad".to_string()]);
+        // Nothing else was touched.
+        assert_eq!(content_of(&extended, "index.js"), content_of(&module, "index.js"));
+        assert!(matches!(extended.files.get("plugin/other.js"), Some(MinimalFile::Ignored(_))));
+        assert_eq!(untransformed(&extended, &["./plugin/utc.js"]), Vec::<String>::new());
+
+        // The entry's closure is now what the bundler is sent, and what /dep_tree follows.
+        let entry = "./plugin/utc.js".to_string();
+        let part = super::super::entries::entry_module("dayish", &extended, &entry);
+        let mut sent: Vec<&str> = part.files.keys().map(String::as_str).collect();
+        sent.sort();
+        assert_eq!(sent, vec!["plugin/shared.js", "plugin/utc.js"]);
+        assert_eq!(part.modules, vec!["left-pad".to_string()]);
     }
 
     // vfile: `#minpath` stays in the importer's dependency list (the bundler

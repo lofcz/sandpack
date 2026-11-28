@@ -5,10 +5,13 @@ use crate::{
     npm_replicator::database::NpmDatabase,
 };
 use moka::future::Cache;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use tracing::warn;
 
 use super::disk_cache;
-use super::process::{process_npm_package, MinimalCachedModule, ModuleDependenciesMap};
+use super::entries::untransformed_entry_files;
+use super::process::{extend_npm_package, process_npm_package, MinimalCachedModule, ModuleDependenciesMap};
 
 pub type Content = Arc<(MinimalCachedModule, ModuleDependenciesMap)>;
 
@@ -78,6 +81,8 @@ pub struct CachedPackageProcessor {
     content_fetcher: PackageContentFetcher,
     temp_dir: String,
     package_cache_dir: PathBuf,
+    /// One extension of a package at a time (`get_with_entries`).
+    extending: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl CachedPackageProcessor {
@@ -108,7 +113,70 @@ impl CachedPackageProcessor {
             content_fetcher,
             temp_dir: String::from(temp_dir),
             package_cache_dir,
+            extending: Default::default(),
         }
+    }
+
+    /// The processed package with the code `entries` name transformed.
+    ///
+    /// A package is processed from the entries it declares. Any other file of
+    /// it may still be imported (`dayjs/plugin/utc`, `lodash/debounce`,
+    /// `elkjs/lib/elk.bundled.js`); left as it is, the bundler downloads such a
+    /// file as published, finds its imports one download at a time, and
+    /// compiles it in the browser. So it is transformed, with what it loads,
+    /// the first time it is asked for, and kept like the rest.
+    #[tracing::instrument(name = "processed_pkg_get_with_entries", skip(self))]
+    pub async fn get_with_entries(
+        &self,
+        package_name: &str,
+        package_version: &str,
+        entries: &[String],
+    ) -> Result<Content, ServerError> {
+        let content = self.get(package_name, package_version).await?;
+        if untransformed_entry_files(package_name, &content.0, entries).is_empty() {
+            return Ok(content);
+        }
+
+        let key = format!("{}@{}", package_name, package_version);
+        let gate = self.extending.lock().entry(key.clone()).or_default().clone();
+        let _turn = gate.lock().await;
+        // Another request may have transformed them while this one waited.
+        let content = self.get(package_name, package_version).await?;
+        let missing = untransformed_entry_files(package_name, &content.0, entries);
+        if missing.is_empty() {
+            return Ok(content);
+        }
+
+        let extended = match extend_npm_package(
+            package_name,
+            package_version,
+            &self.temp_dir,
+            &self.npm_db,
+            &self.content_fetcher,
+            content.0.clone(),
+            missing,
+        )
+        .await
+        {
+            Ok(module) => module,
+            Err(err) => {
+                // The files stay listed, and reach the bundler as published.
+                warn!("Could not transform entries {:?} of {}: {:?}", entries, key, err);
+                return Ok(content);
+            }
+        };
+        if let Err(err) = disk_cache::store(
+            &self.package_cache_dir,
+            package_name,
+            package_version,
+            &extended,
+            &content.1,
+        ) {
+            warn!("Failed to persist package cache for {}: {:?}", key, err);
+        }
+        let extended: Content = Arc::new((extended, content.1.clone()));
+        self.cache.insert(key, Cached::ready(self.refresh_interval, extended.clone())).await;
+        Ok(extended)
     }
 
     #[tracing::instrument(name = "processed_pkg_get", skip(self))]
