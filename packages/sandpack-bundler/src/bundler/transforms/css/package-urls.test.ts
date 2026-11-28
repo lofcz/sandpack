@@ -30,8 +30,9 @@ function context(filepath: string, code: string, files: Record<string, string> =
       bundler: {
         moduleRegistry: registry,
         fs: { readFileAsync: async (path: string) => files[path] },
-        resolveAsync: async (specifier: string, base: string) =>
-          specifier.startsWith('/') ? specifier : new URL(specifier, `file://${base}/`).pathname,
+        // As Bundler.resolveAsync: a relative specifier is relative to the importing file.
+        resolveAsync: async (specifier: string, importer: string) =>
+          specifier.startsWith('/') ? specifier : new URL(specifier, `file://${importer}`).pathname,
       },
     },
   } as unknown as ITranspilationContext;

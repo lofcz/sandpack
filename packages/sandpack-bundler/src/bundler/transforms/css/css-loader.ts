@@ -3,7 +3,7 @@ import { analyzeCss, type CssAnalysis } from '@lofcz/transpiler/css';
 
 import { CompilationError } from '../../../errors/CompilationError';
 import { extractModuleSpecifierParts, isModuleSpecifier } from '../../../resolver/utils/module-specifier';
-import { dirname, join as joinPaths } from '../../../utils/path';
+import { join as joinPaths } from '../../../utils/path';
 import { ITranspilationContext, ITranspilationResult } from '../Transformer';
 import { shapeCssEngineError } from './css-error';
 import { packageCssBase, rebasePackageCssUrls } from './package-urls';
@@ -25,10 +25,22 @@ function ensureLightningcss(): Promise<void> {
   return initPromise;
 }
 
+// lightningcss-wasm suspends a bundle while a read or a resolve is awaited, on
+// one saved stack (Asyncify). A second bundle started meanwhile overwrites it:
+// both come back failed, or with rules missing. So one bundle at a time; the
+// work itself is synchronous, only the waiting was ever shared.
+let bundling: Promise<unknown> = Promise.resolve();
+function bundleInTurn<T>(bundle: () => Promise<T>): Promise<T> {
+  const turn = bundling.then(bundle);
+  bundling = turn.catch(() => undefined);
+  return turn;
+}
+
+/** `importer` is the file the `@import` is written in. */
 async function resolveCSSFile(
   ctx: ITranspilationContext,
   path: string,
-  basePath: string
+  importer: string
 ): Promise<string> {
   const isDependency = isModuleSpecifier(path);
 
@@ -39,7 +51,7 @@ async function resolveCSSFile(
       try {
         const pkgJsonPath = await ctx.module.bundler.resolveAsync(
           joinPaths(path, 'package.json'),
-          basePath,
+          importer,
           []
         );
         const content = await ctx.module.bundler.fs.readFileAsync(pkgJsonPath);
@@ -54,7 +66,7 @@ async function resolveCSSFile(
     }
   }
 
-  return ctx.module.bundler.resolveAsync(path, basePath, ['.css']);
+  return ctx.module.bundler.resolveAsync(path, importer, ['.css']);
 }
 
 /**
@@ -97,7 +109,7 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
     await ensureLightningcss();
 
     const cssModules = isCssModule(entryPath);
-    const result = await bundleAsync({
+    const result = await bundleInTurn(() => bundleAsync({
       filename: entryPath,
       minify: false,
       cssModules,
@@ -116,9 +128,8 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
           if (/^https?:\/\//i.test(specifier) || specifier.startsWith('data:')) {
             return { external: specifier };
           }
-          const base = dirname(originatingFile) || '/';
           try {
-            return await resolveCSSFile(ctx, specifier, base);
+            return await resolveCSSFile(ctx, specifier, originatingFile);
           } catch (resolveErr) {
             const msg =
               resolveErr instanceof Error ? resolveErr.message : String(resolveErr);
@@ -130,7 +141,7 @@ export default async function cssLoader(ctx: ITranspilationContext): Promise<ITr
           }
         },
       },
-    });
+    }));
 
     let code = new TextDecoder().decode(result.code);
     for (const analysis of analyses.values()) code = analysis.restoreImports(code);
