@@ -31,6 +31,15 @@ pub enum MinimalFile {
         // is transpiled?
         #[serde(rename = "t")]
         is_transpiled: bool,
+        // What parsing `c` would tell the bundler, so that it does not have
+        // to: 0 runs as it is, 1 needs the compiler. Absent on a file that was
+        // not transformed and in payloads written before this field.
+        #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
+        scan: Option<u8>,
+        // The `require("…")` specifiers of `c` that `d` leaves out (`node:fs`),
+        // which the bundler links as well.
+        #[serde(rename = "u", default, skip_serializing_if = "Vec::is_empty")]
+        unlisted: Vec<String>,
     },
     // We didn't compile or detected this file being used, so we return the size in bytes instead
     Ignored(u64),
@@ -186,12 +195,20 @@ fn transform_files(
                         Edge::None => {}
                     }
                 }
+                let unlisted: Vec<String> = transformed_file
+                    .scan
+                    .requires
+                    .into_iter()
+                    .filter(|required| !graph_deps.contains(required))
+                    .collect();
                 result_map.insert(
                     found_file,
                     MinimalFile::File {
                         content: transformed_file.content,
                         dependencies: graph_deps,
                         is_transpiled: true,
+                        scan: Some(u8::from(transformed_file.scan.needs_compiler)),
+                        unlisted,
                     },
                 );
             }
@@ -199,7 +216,7 @@ fn transform_files(
                 error!("{:?}", err);
                 result_map.insert(
                     found_file,
-                    MinimalFile::File { content, dependencies: vec![], is_transpiled: false },
+                    MinimalFile::File { content, dependencies: vec![], is_transpiled: false, scan: None, unlisted: vec![] },
                 );
             }
         }
@@ -250,6 +267,8 @@ fn transform_package(
             content: pkg_json_content,
             dependencies: vec![],
             is_transpiled: false,
+            scan: None,
+            unlisted: vec![],
         },
     );
     read_pkg_json.exit();
@@ -506,6 +525,43 @@ mod tests {
         assert!(content_of(&module, "umd.js").contains("this.answer"));
         // An ES module without imports or exports is still a module: `this` is undefined.
         assert!(!content_of(&module, "esm/side.js").contains("typeof this"));
+    }
+
+    // Emscripten glue (three's draco, basis): `require("node:fs")` behind a
+    // run-time check. It is no edge of the package graph, so `d` leaves it
+    // out; the bundler still links it, and is told so instead of parsing the
+    // file to find it.
+    #[test]
+    fn a_transformed_file_says_what_parsing_it_would_tell_the_bundler() {
+        let unpacked = Unpacked::new(&[
+            ("package.json", r#"{ "name": "glue", "version": "1.0.0", "main": "index.js" }"#),
+            ("index.js", "var fs = typeof process === 'object' ? require('node:fs') : null; module.exports = [fs, require('./plain.js'), require('./loader.js')];"),
+            ("plain.js", "module.exports = require('left-pad');"),
+            ("loader.js", "module.exports = function (name) { return require(name); };"),
+        ]);
+        let (module, _) = transform_package(unpacked.0.clone(), "glue", "1.0.0").unwrap();
+        let said = |path: &str| match module.files.get(path) {
+            Some(MinimalFile::File { scan, unlisted, .. }) => (*scan, unlisted.clone()),
+            other => panic!("{path} was not transformed: {other:?}"),
+        };
+
+        assert_eq!(said("index.js"), (Some(0), vec!["node:fs".to_string()]));
+        assert_eq!(said("plain.js"), (Some(0), vec![]));
+        assert_eq!(said("loader.js"), (Some(1), vec![]));
+        // Not transformed, so not scanned.
+        assert_eq!(said("package.json"), (None, vec![]));
+
+        // The fields survive the disk cache and cost nothing where they say nothing.
+        let bytes = crate::utils::msgpack::serialize_msgpack(&module).unwrap();
+        let read: MinimalCachedModule = crate::utils::msgpack::deserialize_msgpack(&bytes).unwrap();
+        match read.files.get("index.js") {
+            Some(MinimalFile::File { scan, unlisted, .. }) => {
+                assert_eq!((*scan, unlisted.clone()), (Some(0), vec!["node:fs".to_string()]));
+            }
+            other => panic!("index.js did not round-trip: {other:?}"),
+        }
+        let plain = crate::utils::msgpack::serialize_msgpack(module.files.get("plain.js").unwrap()).unwrap();
+        assert!(!plain.windows(2).any(|pair| pair == [0xa1, b'u']), "an empty list is not written");
     }
 
     // vfile: `#minpath` stays in the importer's dependency list (the bundler

@@ -25,11 +25,14 @@ use crate::app_error::ServerError;
 use super::dependency_collector::DependencyCollector;
 use super::env_replacer::EnvReplacer;
 use super::import_meta::ImportMetaReplacer;
+use super::module_scan::{scan_module, ModuleScan};
 
 #[derive(Debug)]
 pub struct TransformedFile {
     pub content: String,
     pub dependencies: HashSet<String>,
+    /// What the bundler would learn by parsing `content`.
+    pub scan: ModuleScan,
 }
 
 /// What a file is parsed as. Node decides by the extension and the package's
@@ -210,6 +213,7 @@ pub fn transform_file_as(
                     });
 
                     let program = program.apply(hygiene()).apply(fixer(Some(&comments)));
+                    let scan = scan_module(&program);
 
                     // Remove sourcemap comment
                     {
@@ -241,6 +245,7 @@ pub fn transform_file_as(
                     Ok(TransformedFile {
                         content: output,
                         dependencies,
+                        scan,
                     })
                 },
             )

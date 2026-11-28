@@ -373,6 +373,8 @@ mod tests {
             content: content.to_string(),
             dependencies: deps.iter().map(|d| d.to_string()).collect(),
             is_transpiled: true,
+            scan: None,
+            unlisted: vec![],
         }
     }
 
