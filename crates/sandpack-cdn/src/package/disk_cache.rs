@@ -20,7 +20,7 @@ use super::process::{MinimalCachedModule, ModuleDependenciesMap};
 /// v4: inline helpers via `ecma_helpers_inline` (common_js → inject_helpers).
 /// v5: the transform pass follows the `browser` field and `#name` imports, so
 ///     replacement files are transformed and `d` keeps `#name` edges.
-const DISK_FORMAT: u32 = 5;
+pub const DISK_FORMAT: u32 = 5;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DiskEnvelope {

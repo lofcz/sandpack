@@ -130,6 +130,12 @@ pub struct Dependency {
     /// one's closure (`/package` with that entry).
     #[serde(rename = "e", default)]
     entries: Vec<String>,
+    /// The generation of the package payloads this server answers `/package`
+    /// with. Those answers are cached for a year by browsers and proxies, so
+    /// the bundler sends it back in each `/package` query: when what a
+    /// payload holds changes, its address does too.
+    #[serde(rename = "g", default)]
+    generation: u32,
 }
 
 impl Dependency {
@@ -141,6 +147,7 @@ impl Dependency {
             depth,
             source,
             entries: vec![],
+            generation: super::disk_cache::DISK_FORMAT,
         }
     }
 }
@@ -544,10 +551,11 @@ mod tests {
 
     #[test]
     fn dependency_names_its_source_only_for_aliases() {
+        let g = crate::package::disk_cache::DISK_FORMAT;
         let plain = serde_json::to_value(Dependency::new("react".into(), "19.0.0".into(), 0, "react".into())).unwrap();
-        assert_eq!(plain, serde_json::json!({ "n": "react", "v": "19.0.0", "d": 0, "e": [] }));
+        assert_eq!(plain, serde_json::json!({ "n": "react", "v": "19.0.0", "d": 0, "e": [], "g": g }));
         let alias = serde_json::to_value(Dependency::new("react".into(), "10.26.0".into(), 0, "preact".into())).unwrap();
-        assert_eq!(alias, serde_json::json!({ "n": "react", "v": "10.26.0", "d": 0, "s": "preact", "e": [] }));
+        assert_eq!(alias, serde_json::json!({ "n": "react", "v": "10.26.0", "d": 0, "s": "preact", "e": [], "g": g }));
     }
 
     #[test]

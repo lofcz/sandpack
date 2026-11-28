@@ -21,6 +21,11 @@ struct PackageQuery {
     version: String,
     #[serde(default)]
     entry: Option<String>,
+    /// The payload generation `/dep_tree` reported (its `g`). It selects
+    /// nothing: it is in the query so that the answers of one generation and
+    /// the next are cached under different addresses.
+    #[serde(default, rename = "g")]
+    _generation: Option<u32>,
 }
 
 pub async fn get_package_data_reply(
@@ -73,5 +78,23 @@ pub async fn package_data_post_handler(State(state): State<AppState>, body: Stri
             reply.into_response()
         }
         Err(err) => ErrorReply::from(err).respond(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PackageQuery;
+
+    // A bundler that sends the generation back is asking under a new address;
+    // one that does not (an older bundler) is answered all the same.
+    #[test]
+    fn a_query_may_carry_the_payload_generation() {
+        let with: PackageQuery =
+            serde_json::from_str(r#"{"name":"react","version":"19.0.0","entry":"./client","g":5}"#).unwrap();
+        assert_eq!((with.name.as_str(), with.version.as_str(), with.entry.as_deref()), ("react", "19.0.0", Some("./client")));
+        assert_eq!(with._generation, Some(5));
+
+        let without: PackageQuery = serde_json::from_str(r#"{"name":"react","version":"19.0.0"}"#).unwrap();
+        assert_eq!((without.entry, without._generation), (None, None));
     }
 }
