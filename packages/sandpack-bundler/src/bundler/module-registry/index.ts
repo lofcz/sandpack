@@ -39,11 +39,13 @@ import { NodeModule } from './NodeModule';
  */
 function trustCdnPrecompiled(file: ICDNModuleFile): boolean {
   if (file.t === false) return false;
+  if (file.s !== undefined) return file.s === 0;
   if (scanOf(file).isEsm) return false;
   return true;
 }
 
-// One parse per CDN file, however many times it is asked about.
+// A file the CDN did not scan (`s` absent) is parsed here, on the thread the
+// preview boots on: once per file, however many times it is asked about.
 const scans = new WeakMap<ICDNModuleFile, CjsScan>();
 function scanOf(file: ICDNModuleFile): CjsScan {
   let scan = scans.get(file);
@@ -58,6 +60,7 @@ function scanOf(file: ICDNModuleFile): CjsScan {
  */
 function linkedSpecifiers(file: ICDNModuleFile): string[] {
   if (file.t === false) return file.d;
+  if (file.s !== undefined) return file.u?.length ? [...file.d, ...file.u] : file.d;
   let unlisted: string[] | undefined;
   for (const required of scanOf(file).requires) {
     if (!file.d.includes(required)) (unlisted ??= []).push(required);
@@ -728,10 +731,10 @@ export class ModuleRegistry {
     }
 
     const precompiled = trustCdnPrecompiled(file);
-    if (!precompiled) {
-      logger.warn(
-        `CDN module ${path} not trusted as precompiled (t=${String(file.t)}); routing through Babel`,
-      );
+    // `t: false` is the CDN's own answer (a package.json, a file it could not
+    // transform); only a transformed file that still needs the compiler is news.
+    if (!precompiled && file.t !== false) {
+      logger.debug(`CDN module ${path} needs the compiler`);
     }
     const module = new Module(path, file.c, precompiled, this.bundler);
     this.bundler.modules.set(path, module);

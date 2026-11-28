@@ -160,6 +160,12 @@ export interface ICDNModuleFile {
   d: string[];
   // is transpiled
   t: boolean;
+  // What parsing `c` would say, from a CDN that scans what it transforms:
+  // 0 runs as it is, 1 needs the compiler. Absent from an older CDN and from
+  // payloads a browser cached before; the file is then parsed here.
+  s?: 0 | 1;
+  // The `require("…")` specifiers `d` leaves out; sent with `s`, omitted when empty.
+  u?: string[];
 }
 
 export interface ICDNModule {
