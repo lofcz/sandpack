@@ -4,7 +4,7 @@ import { parseFrontmatter } from './frontmatter';
 // The safe-subset remark plugins live in the shared @immediately-run/mdx-plugins
 // package (R3-213) so the compiled path here and the SDK's non-executable safe
 // renderer share ONE implementation and can't drift. Bundled into this dist
-// (tsup noExternal), so the compiled MDX bytes are unchanged from when they lived
+// (rslib.config.ts), so the compiled MDX bytes are unchanged from when they lived
 // in `./remark*`.
 import { remarkAdmonitions, remarkHeadingAnchors, remarkWikiLinks } from '@immediately-run/mdx-plugins';
 

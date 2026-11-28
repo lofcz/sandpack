@@ -4,7 +4,7 @@
 // `<a href={fn()}>`). These tests LOCK the four established behaviors so a future
 // `@mdx-js/mdx` bump can't silently regress them (byte-identity of the whole chain
 // is additionally pinned by the `esm-links-mdx` parity fixture).
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 
 import { compileMdx } from '../dist/index.js';

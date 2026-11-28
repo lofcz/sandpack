@@ -3,7 +3,7 @@
  * Bake `TRANSPILER_VERSION` from package.json into `src/version.ts` — the
  * toolchain stamp (PRETRANSPILED_ARTIFACTS_SPEC §4.4) must be the real package
  * version, not a hand-maintained constant that can drift. Runs as `prebuild`;
- * the generated file is committed so node --test and consumers see it without a
+ * the generated file is committed so the tests and consumers see it without a
  * build, and `version.test.mjs` fails CI if it ever drifts from package.json.
  */
 import { readFileSync, writeFileSync } from 'node:fs';

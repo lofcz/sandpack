@@ -5,7 +5,7 @@
 // a fixture exercise the app-root react-refresh variant vs. the plain/node_modules
 // variant. The corpus deliberately covers:
 //   - app-root .tsx / .jsx / .js          -> react-refresh chain (HMR wrapped)
-//   - app-root .js with `using`            -> explicit-resource-management plugin
+//   - app-root .js with `using`            -> explicit resource management (preset-env)
 //   - app-root .js with require()s         -> dependency collection
 //   - app-root .ts                         -> plain chain (no refresh)
 //   - /node_modules/ .js                   -> plain chain + compact output

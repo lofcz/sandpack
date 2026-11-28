@@ -5,28 +5,26 @@
 // transpiler version, so it can never drift from the sandbox iframe's transpiler
 // (the gen-toolchain-hash / G2-8 parity anchor, PRETRANSPILED_ARTIFACTS_SPEC §4.4).
 //
-// It imports the transform surface from the *built* package's worker entry
-// (`../dist/babel/worker-api.js`) rather than the package root, so the bytes the
-// bundler emits are the tsup-built `transformBabel`/`compileMdx` (byte-identical
-// behaviour to the CLI's pre-transpiled artifacts and the sandbox iframe runtime).
-// The worker now owns BOTH the Babel chain (`transform`) and the MDX->JSX compile
-// (`mdx-compile`) — R3-150 moved the MDX compile out of the iframe now that the
-// worker is esbuild-built (Parcel couldn't follow the unified/mdx tree). The
-// react-refresh wrap still happens in-iframe.
+// It imports the transform surface from the package's worker entry
+// (`../src/babel/worker-api`) rather than the package root: the same source the
+// `dist/` build compiles, so the worker behaves exactly like the CLI's
+// pre-transpiled artifacts and the sandbox iframe runtime (the worker harness
+// asserts the two produce identical bytes).
+// The worker owns BOTH the Babel chain (`transform`) and the MDX->JSX compile
+// (`mdx-compile`). The react-refresh wrap still happens in-iframe.
 //
 // The transport (WorkerMessageBus + the {type:'connect'} MessagePort handshake)
 // comes from the leaf `@immediately-run/worker-transport` package, so this worker
 // entry does not depend on `sandbox`.
 //
 // This worker is spawned **classic** by the parent page (`new Worker(url)` — NOT a
-// module worker); the esbuild build (`scripts/build-worker.mjs`, `format: 'iife'`
-// into the worker global) preserves that shape as a single self-contained file (no
+// module worker); the Rslib build (the `worker` lib of `rslib.config.ts`, an IIFE
+// for the worker global) keeps that shape as a single self-contained file (no
 // `importScripts` chunks). The parent transfers a `MessagePort` entangled with one
 // handed into the sandboxed iframe so the iframe can drop `allow-same-origin` and
 // transform requests flow directly.
 import { bindWorkerMessageBus } from '@immediately-run/worker-transport';
-// eslint-disable-next-line import/extensions
-import { transformBabel, compileMdx, type ITransformData } from '../dist/babel/worker-api.js';
+import { transformBabel, compileMdx, type ITransformData } from '../src/babel/worker-api';
 
 bindWorkerMessageBus(self, {
   channel: 'sandpack-babel',

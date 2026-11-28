@@ -29,8 +29,11 @@
     "id": "resource-js-using",
     "path": "/app/src/resource.js",
     "deps": [
-      "core-js/modules/esnext.symbol.async-dispose.js",
-      "core-js/modules/esnext.symbol.dispose.js",
+      "core-js/modules/es.symbol.async-dispose.js",
+      "core-js/modules/es.symbol.dispose.js",
+      "core-js/modules/es.suppressed-error.constructor.js",
+      "core-js/modules/es.iterator.dispose.js",
+      "core-js/modules/es.async-iterator.async-dispose.js",
       "/node_modules/__csb_bust/refresh-helper.js"
     ]
   },

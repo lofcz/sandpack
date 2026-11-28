@@ -1,7 +1,7 @@
 # @lofcz/transpiler
 
 The single source of truth for immediately.run's **per-file transform chain** —
-Babel (with `react-refresh/babel` + explicit-resource-management) followed by the
+Babel 8 (preset-env, TypeScript, React and `react-refresh/babel`) followed by the
 react-refresh HMR wrapper. Both consumers depend on this one package so their
 output is **byte-identical**:
 
@@ -68,11 +68,23 @@ npm run gen:golden   # then review the diff — it is what every cached repo exe
 ## Develop
 
 ```bash
-npm run build       # tsup -> dist/ (esm + cjs + d.ts)
-npm run typecheck    # tsc --noEmit
-npm test            # build, then node --test (parity + unit)
+npm run build        # Rslib -> dist/ (esm + cjs + d.ts) and worker/babel-worker.js
+npm run dev          # the same build, rebuilding on change
+npm run typecheck    # tsc --noEmit (TypeScript 7)
+npm run lint         # Rslint
+npm test             # build, then Rstest (parity + unit)
+npm run test:worker  # build, then the worker harness
 ```
 
-The Babel toolchain (`@babel/standalone`, `@babel/plugin-proposal-explicit-resource-management`,
-`react-refresh`) is pinned to exact versions: those versions *are* part of the
-stamp, so a consumer must install the same ones for the bytes to match.
+The toolchain is Rslib (build, `rslib.config.ts`), Rstest (tests, `rstest.config.ts`)
+and Rslint (`rslint.config.ts`). The tests import the built `dist/`, loaded by
+Node as a consumer loads it.
+
+`@babel/standalone` and `react-refresh` are pinned to exact versions: those
+versions *are* part of the stamp, so a consumer must install the same ones for
+the bytes to match. Babel's core-js plugin and the data that decides which
+polyfills a file gets (`babel-plugin-polyfill-corejs3`, `core-js-compat`) are
+pinned too and compiled into `dist/` and the worker, so they cannot differ
+between two installs of one version. `shims/` holds the modules the build puts
+in place of what those would otherwise pull in: a second Babel, a second copy
+of the browser data, and Node's `crypto` in the worker.

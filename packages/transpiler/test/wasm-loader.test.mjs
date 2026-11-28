@@ -8,7 +8,7 @@
 //   row 2: `new URL('./add.wasm', import.meta.url)` — the Emscripten/wasm-pack idiom —
 //          rewrites to the runtime identifier and EVALUATES as a classic script,
 //          resolving the sibling against the module's own URL.
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 
 import { transformBabel, transformFile, IMPORT_META_GLOBAL, PLAIN_BABEL_CONFIG } from '../dist/index.js';

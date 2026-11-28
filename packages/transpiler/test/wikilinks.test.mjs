@@ -5,7 +5,7 @@
 // resolves NOTHING against other files, so a file's compiled output depends only
 // on its own bytes (the byte-identity invariant, §13.2). Existence-driven
 // resolved/broken/self state is the SDK component's job (§13.3), tested there.
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 
 import { compileMdx } from '../dist/index.js';

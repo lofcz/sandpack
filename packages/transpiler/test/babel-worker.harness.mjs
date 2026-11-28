@@ -8,9 +8,8 @@
 // node MessagePort, and speak the WorkerMessageBus wire protocol from the parent side.
 //
 // Run via `npm run test:worker` (which builds dist + the worker first). Not named
-// `*.test.mjs` so it stays out of the golden `node --test test/*.test.mjs` run,
-// which must not depend on the esbuild worker build.
-import test from 'node:test';
+// `*.test.mjs` so it stays out of the golden `npm test` run.
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
@@ -40,8 +39,9 @@ function loadWorker() {
     atob: (s) => Buffer.from(s, 'base64').toString('binary'),
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
     performance,
-    process,
   };
+  // No `process`, `Buffer` or `require`: a worker has none, so a build that
+  // reaches for a Node global fails here instead of in the browser.
   context.globalThis = context;
   context.self = context;
   context.window = context;
@@ -83,7 +83,7 @@ function adapt(port) {
 function openWorker() {
   assert.ok(
     existsSync(ENTRY),
-    `worker bundle missing at ${ENTRY} — run "npm run build:worker" first`,
+    `worker bundle missing at ${ENTRY} — run "npm run build" first`,
   );
 
   const listeners = loadWorker();

@@ -7,7 +7,7 @@
 // compiling file's own bytes — no cross-file resolution (the byte-identity
 // invariant, §15.3). The default `<HeadingAnchor>` render is the SDK's job, tested
 // there.
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 
 import { compileMdx, textSlug, sectionId } from '../dist/index.js';

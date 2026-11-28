@@ -1,6 +1,6 @@
 {
   "name": "@lofcz/transpiler",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "The single source of truth for immediately.run's per-file transform chain (MDX + Babel + react-refresh), shared byte-for-byte between the browser sandbox bundler and the CLI's pre-transpiled-artifact emitter.",
   "license": "MIT",
   "repository": {
@@ -38,18 +38,18 @@
   "scripts": {
     "gen:version": "node scripts/gen-version.mjs",
     "prebuild": "node scripts/gen-version.mjs",
-    "build": "tsup",
-    "build:worker": "node scripts/build-worker.mjs",
+    "build": "rslib build",
+    "dev": "rslib build --watch",
     "typecheck": "tsc --noEmit",
+    "lint": "rslint .",
     "gen:golden": "node scripts/gen-golden.mjs",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "test:worker": "npm run build && npm run build:worker && node --test test/babel-worker.harness.mjs",
-    "prepublishOnly": "npm run build && npm run build:worker"
+    "test": "npm run build && rstest run",
+    "test:worker": "npm run build && rstest run --include test/babel-worker.harness.mjs",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@babel/plugin-proposal-explicit-resource-management": "7.27.4",
-    "@babel/standalone": "7.29.16",
-    "@immediately-run/mdx-plugins": "^0.1.0",
+    "@babel/standalone": "8.1.4",
+    "@immediately-run/mdx-plugins": "^0.8.0",
     "@immediately-run/worker-transport": "^0.1.0",
     "@mdx-js/mdx": "3.1.1",
     "css-tree": "3.2.1",
@@ -58,27 +58,23 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.27.0",
-    "@types/babel__standalone": "7.1.9",
+    "@babel/core": "^8.1.4",
+    "@babel/helper-compilation-targets": "8.0.7",
+    "@microsoft/api-extractor": "^7.60.2",
+    "@noble/hashes": "^2.4.0",
+    "@rslib/core": "^1.1.0",
+    "@rslint/core": "^0.10.1",
+    "@rspack/core": "^2.3.4",
+    "@rstest/core": "^0.12.6",
     "@types/css-tree": "^3.2.0",
-    "@types/mdast": "4.0.4",
-    "assert": "^2.1.0",
-    "buffer": "^6.0.3",
-    "create-hash": "^1.2.0",
-    "crypto-browserify": "^3.12.1",
-    "esbuild": "^0.28.2",
-    "events": "^3.3.0",
-    "path-browserify": "^1.0.1",
-    "process": "^0.11.10",
-    "stream-browserify": "^3.0.0",
-    "string_decoder": "^1.3.0",
-    "tsup": "^8.0.0",
-    "typescript": "^5.6.0",
-    "unified": "11.0.5",
-    "vm-browserify": "^1.1.2"
+    "babel-plugin-polyfill-corejs3": "1.0.0",
+    "core-js": "3.51.0",
+    "core-js-compat": "3.51.0",
+    "typescript": "^7.0.2",
+    "unified": "11.0.5"
   },
   "engines": {
-    "node": ">=18"
+    "node": "^22.18.0 || >=24.11.0"
   },
   "publishConfig": {
     "access": "public",

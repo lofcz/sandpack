@@ -187,6 +187,7 @@ module.exports = {
 };
 `.trim();
 
+// The prelude is ONE generated line, ended by the newline `getWrapperCode` adds.
 const prelude = `var _csbRefreshUtils = require("${HELPER_PATH}");
 var prevRefreshReg = window.$RefreshReg$;
 var prevRefreshSig = window.$RefreshSig$;
@@ -198,12 +199,50 @@ _csbRefreshUtils.postlude(module);
 window.$RefreshReg$ = prevRefreshReg;
 window.$RefreshSig$ = prevRefreshSig;`;
 
-// Lines the collapsed `prelude` occupies above the Babel output. The Babel
-// inline source map counts lines from the start of ITS output; the wrapper
-// shifts every emitted line down by this many rows. We adjust the map's
-// `mappings` by prepending that many empty generated lines (";") so original
-// positions still resolve after the shift.
-const PRELUDE_LINE_COUNT = 3;
+// Lines the `prelude` occupies above the Babel output. The Babel inline source
+// map counts lines from the start of ITS output; the wrapper shifts every
+// emitted line down by this many rows. We adjust the map's `mappings` by
+// prepending that many empty generated lines (";") so original positions still
+// resolve after the shift.
+const PRELUDE_LINE_COUNT = 1;
+
+/**
+ * Whether `code` opens with a `"use strict"` directive, the way Babel prints
+ * one: among the string-literal statements that start the program, each ended
+ * by a semicolon. Anything this scan is unsure about counts as "no", which
+ * leaves the module as it was.
+ */
+function startsWithUseStrict(code: string): boolean {
+  let i = 0;
+  for (;;) {
+    // whitespace and comments may precede a directive
+    for (;;) {
+      const ch = code[i];
+      if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') i++;
+      else if (ch === '/' && code[i + 1] === '/') {
+        const end = code.indexOf('\n', i);
+        if (end === -1) return false;
+        i = end + 1;
+      } else if (ch === '/' && code[i + 1] === '*') {
+        const end = code.indexOf('*/', i + 2);
+        if (end === -1) return false;
+        i = end + 2;
+      } else break;
+    }
+    const quote = code[i];
+    if (quote !== '"' && quote !== "'") return false;
+    const close = code.indexOf(quote, i + 1);
+    if (close === -1) return false;
+    const text = code.slice(i + 1, close);
+    // a directive is one line of plain characters; an escape ends the scan
+    if (text.includes('\\') || text.includes('\n')) return false;
+    let next = close + 1;
+    while (code[next] === ' ' || code[next] === '\t') next++;
+    if (code[next] !== ';') return false;
+    if (text === 'use strict') return true;
+    i = next + 1;
+  }
+}
 
 // Portable base64 — `Buffer` in Node (tests/CLI), `atob`/`btoa` in the worker.
 // `Buffer` is referenced only behind a typeof guard, so it's never touched in
@@ -273,7 +312,7 @@ if (typeof window !== 'undefined') {
 /**
  * Wrap Babel-transformed source in the HMR boundary prelude/postlude.
  *
- * Invariants this wrapper must keep (both were broken by the naive
+ * Invariants this wrapper must keep (each was broken by the naive
  * one-line `prelude + code + postlude` wrap):
  *
  *  - The Babel output's trailing `//# sourceMappingURL` comment stays LAST.
@@ -287,19 +326,25 @@ if (typeof window !== 'undefined') {
  *    fresh function scope and surfaces `ReferenceError: <ident> is not
  *    defined` with no mappable frame. Restoring `$RefreshReg$`/`$RefreshSig$`
  *    by simple assignment (not `finally`) keeps the body at top level.
+ *  - A strict module stays strict. Babel opens a compiled ES module with
+ *    `"use strict"`, and a directive only counts while nothing but other
+ *    directives precedes it — with the prelude in front it was an ordinary
+ *    string statement and the module ran in sloppy mode. The wrapper therefore
+ *    opens with the directive itself whenever the Babel output does.
  *
- * The prelude is collapsed to its own lines and the map is shifted to match,
- * so original positions survive the wrap.
+ * The prelude sits on its own line above the Babel output and the map is
+ * shifted by that one line, so original positions survive the wrap.
  */
 export const getWrapperCode = (sourceCode: string): string => {
+  const head = (startsWithUseStrict(sourceCode) ? '"use strict";' : '') + prelude + '\n';
   const marker = '\n//# sourceMappingURL=';
   const idx = sourceCode.lastIndexOf(marker);
   if (idx === -1) {
     // No inline map (no-op module) — nothing to preserve; plain concat.
-    return prelude + sourceCode + '\n' + postlude;
+    return head + sourceCode + '\n' + postlude;
   }
   const body = sourceCode.slice(0, idx);
   const mapComment = sourceCode.slice(idx); // includes the leading "\n"
-  const shifted = prelude + body + '\n' + postlude + mapComment;
+  const shifted = head + body + '\n' + postlude + mapComment;
   return shiftInlineSourceMap(shifted, PRELUDE_LINE_COUNT);
 };

@@ -3,7 +3,7 @@
 // (caught live on the reckoner demo, 2026-08-24). The transform rewrites the syntax to the
 // runtime-provided identifier; these tests pin the emitted shape and prove the output is
 // EVALUABLE as a classic script with the runtime's frozen `{ url }`.
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 
 import { transformBabel, IMPORT_META_GLOBAL, PLAIN_BABEL_CONFIG } from '../dist/index.js';

@@ -6,7 +6,7 @@
 // These assertions exercise `compileMdx` directly (the MDX→JSX stage both the
 // browser sandbox and the CLI share); byte-identity of the whole chain is pinned
 // separately by the parity corpus (`admonition-mdx` in parity.test.mjs).
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 
 import { compileMdx } from '../dist/index.js';

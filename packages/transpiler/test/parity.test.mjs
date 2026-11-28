@@ -7,7 +7,7 @@
 // drift — a bumped @babel/standalone, a changed plugin option — fails here, by
 // design: such drift silently strips HMR instrumentation or changes emitted
 // modules under every cached repo.
-import test from 'node:test';
+import { test } from '@rstest/core';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

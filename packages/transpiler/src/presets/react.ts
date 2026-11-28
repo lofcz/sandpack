@@ -21,10 +21,7 @@ import type { DepMap } from '../depmap';
 /** Babel config for app-root files that receive HMR instrumentation. */
 export const REACT_REFRESH_BABEL_CONFIG = {
   presets: [['react', { runtime: 'automatic' }]],
-  plugins: [
-    ['react-refresh/babel', { skipEnvCheck: true }],
-    '@babel/plugin-proposal-explicit-resource-management',
-  ],
+  plugins: [['react-refresh/babel', { skipEnvCheck: true }]],
 };
 
 /** Babel config for the non-app-root / non-refresh variant (`.ts`, node_modules). */

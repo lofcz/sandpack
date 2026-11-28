@@ -23,17 +23,15 @@
 
 export const IMPORT_META_GLOBAL = '$ir_import_meta';
 
-export function importMetaShim() {
-  return {
-    name: 'immediately-run:import-meta-shim',
-    visitor: {
-      MetaProperty(path: any) {
-        // `import.meta` — the MetaProperty whose meta is `import` (`new.target`, the
-        // other MetaProperty, has meta `new` and must pass through untouched).
-        if (path.node.meta?.name === 'import' && path.node.property?.name === 'meta') {
-          path.replaceWith({ type: 'Identifier', name: IMPORT_META_GLOBAL });
-        }
-      },
+export const importMetaShim = () => ({
+  name: 'immediately-run:import-meta-shim',
+  visitor: {
+    MetaProperty(path: any) {
+      // `import.meta` — the MetaProperty whose meta is `import` (`new.target`, the
+      // other MetaProperty, has meta `new` and must pass through untouched).
+      if (path.node.meta?.name === 'import' && path.node.property?.name === 'meta') {
+        path.replaceWith({ type: 'Identifier', name: IMPORT_META_GLOBAL });
+      }
     },
-  };
-}
+  },
+});

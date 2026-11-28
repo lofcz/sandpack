@@ -16,17 +16,8 @@ const BABEL_PRESET_LOADERS: Map<string, LoaderFn> = new Map();
 const BABEL_PLUGIN_LOADERS: Map<string, LoaderFn> = new Map([
   [
     'react-refresh/babel',
-    () => {
-      // @ts-ignore - no types shipped for the babel entry point
-      return import('react-refresh/babel');
-    },
-  ],
-  [
-    '@babel/plugin-proposal-explicit-resource-management',
-    () => {
-      // @ts-ignore - no types shipped
-      return import('@babel/plugin-proposal-explicit-resource-management');
-    },
+    // no types are shipped for the babel entry point
+    () => import('react-refresh/babel'),
   ],
 ]);
 

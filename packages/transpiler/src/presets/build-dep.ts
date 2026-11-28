@@ -19,7 +19,7 @@ export function isBuildDep(name: string): boolean {
     return true;
   }
 
-  for (let regex of BUILD_DEP_REGEXES) {
+  for (const regex of BUILD_DEP_REGEXES) {
     if (regex.test(name)) {
       return true;
     }
@@ -30,7 +30,7 @@ export function isBuildDep(name: string): boolean {
 
 export function filterBuildDeps(deps: DepMap): DepMap {
   const results: DepMap = {};
-  for (let key in deps) {
+  for (const key in deps) {
     if (!isBuildDep(key)) {
       results[key] = deps[key];
     }
