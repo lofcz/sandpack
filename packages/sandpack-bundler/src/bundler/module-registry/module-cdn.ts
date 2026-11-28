@@ -70,6 +70,8 @@ export interface IResolvedDependency {
   s?: string;
   // the entries the tree loads from this package (`.`, `./client`, …)
   e?: string[];
+  // the generation of the CDN's package payloads (see `payloadGenerations`)
+  g?: number;
 }
 
 // Exported so the lockset check (lockset.ts) can reject locksets resolved
@@ -148,8 +150,22 @@ export async function fetchManifest(
   pins: DepMap = {},
   entries: Record<string, string[]> = {},
 ): Promise<IResolvedDependency[]> {
-  return fetchPayload('dep_tree', JSON.stringify({ deps, pins, entries }), describeDeps(deps), isManifest);
+  const manifest = await fetchPayload('dep_tree', JSON.stringify({ deps, pins, entries }), describeDeps(deps), isManifest);
+  for (const dep of manifest) {
+    if (typeof dep.g === 'number') payloadGenerations.set(`${dep.s ?? dep.n}@${dep.v}`, dep.g);
+  }
+  return manifest;
 }
+
+/**
+ * What generation of payloads the CDN serves for a release, as its dependency
+ * tree said. A `/package` answer is immutable under its address and kept for a
+ * year, by this browser and by every proxy on the way, so a CDN that has
+ * learned to transform a package differently could never say so. The
+ * generation goes into the query: a new one is a new address. A CDN that
+ * reports none is asked as before.
+ */
+const payloadGenerations = new Map<string, number>();
 
 export type CDNModuleFileType = ICDNModuleFile | number;
 
@@ -178,7 +194,8 @@ export interface ICDNModule {
 /** One `/package` response: an entry's closure, or the listing (`entry: null`). */
 async function fetchPackagePart(name: string, version: string, entry: string | null): Promise<ICDNModule> {
   const subject = `${name}@${version} (${entry === null ? 'file listing' : `entry ${entry}`})`;
-  return fetchPayload('package', JSON.stringify({ name, version, entry }), subject, isModulePart);
+  const g = payloadGenerations.get(`${name}@${version}`);
+  return fetchPayload('package', JSON.stringify(g === undefined ? { name, version, entry } : { name, version, entry, g }), subject, isModulePart);
 }
 
 /** Overlay inlined files onto `into` (a listing entry becomes the inlined file). */

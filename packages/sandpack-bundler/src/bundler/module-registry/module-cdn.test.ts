@@ -85,3 +85,32 @@ it('surfaces service errors as-is, without retrying another transport', async ()
   await expect(fetchManifest({ ['a'.repeat(200)]: '1.0.0' })).rejects.toBe(error);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+
+// A /package answer is cached for a year under its address, here and by every
+// proxy on the way. The CDN's dependency tree says which generation of payloads
+// it serves, and each query carries it: what the CDN transforms differently
+// tomorrow is asked for under a new address.
+it('asks for a package under the payload generation its dependency tree reported', async () => {
+  fetchMock.mockImplementation(async (url: string, _init: unknown, decode: Decode) =>
+    decode(encode(url.includes('/dep_tree')
+      ? [{ n: 'gen-pkg', v: '1.0.0', d: 0, e: ['.'], g: 5 }, { n: 'gen-alias', v: '2.0.0', d: 0, s: 'gen-target', g: 5 }, { n: 'old-cdn-pkg', v: '3.0.0', d: 0 }]
+      : { f: {}, m: [] })),
+  );
+  await fetchManifest({ 'gen-pkg': '^1.0.0', 'gen-alias': 'npm:gen-target@^2.0.0', 'old-cdn-pkg': '^3.0.0' });
+  fetchMock.mockClear();
+
+  await fetchModule('gen-pkg', '1.0.0', ['.']);
+  // An alias's files are asked for under the package they come from.
+  await fetchModuleEntries('gen-target', '2.0.0', ['./sub']);
+  // A CDN that reports no generation is asked as before, under the addresses already cached.
+  await fetchModuleEntries('old-cdn-pkg', '3.0.0', ['.']);
+  await fetchModuleEntries('gen-pkg', '1.0.1', ['.']);
+
+  expect(fetchMock.mock.calls.map(([url, init]) => payload(url, init))).toEqual([
+    '7({"name":"gen-pkg","version":"1.0.0","entry":null,"g":5})',
+    '7({"name":"gen-pkg","version":"1.0.0","entry":".","g":5})',
+    '7({"name":"gen-target","version":"2.0.0","entry":"./sub","g":5})',
+    '7({"name":"old-cdn-pkg","version":"3.0.0","entry":"."})',
+    '7({"name":"gen-pkg","version":"1.0.1","entry":"."})',
+  ]);
+});
